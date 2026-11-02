@@ -1,0 +1,650 @@
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const { db, DATA, getSetting, setSetting } = require('./db');
+const auth = require('./auth');
+const mail = require('./mail');
+
+const { createApp, uploader } = require('./mini');
+const app = createApp();
+app.use(auth.sessionMiddleware);
+
+const STATUSES = ['Recibido', 'Procesando', 'Listo para recoger', 'Entregado'];
+const PORT = parseInt(process.env.PORT || '3081', 10);
+
+/* ---------- utilidades ---------- */
+const todayStr = () => new Date().toLocaleDateString('sv-SE');
+const addDays = (d, n) => {
+  const x = new Date(d + 'T12:00:00');
+  x.setDate(x.getDate() + n);
+  return x.toLocaleDateString('sv-SE');
+};
+const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+const bad = (msg, status = 400) => { const e = new Error(msg); e.status = status; return e; };
+const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+const slugify = s =>
+  String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'cliente';
+const clean = (s, n = 200) => String(s == null ? '' : s).trim().slice(0, n);
+const isHex = c => /^#[0-9a-fA-F]{6}$/.test(String(c || ''));
+const logStatus = (orderId, what, user) =>
+  db.prepare('INSERT INTO status_log(order_id,what,by_user) VALUES (?,?,?)').run(orderId, what, user ? (user.name || user.email) : 'sistema');
+
+/* ---------- carga de pedidos ---------- */
+function loadOrder(id) {
+  const o = db.prepare(
+    `SELECT o.*, c.name AS client_name, c.slug AS client_slug, c.color AS client_color, c.crest AS client_crest
+     FROM orders o JOIN clients c ON c.id=o.client_id WHERE o.id=?`
+  ).get(id);
+  if (!o) return null;
+  o.lines = db.prepare('SELECT * FROM order_lines WHERE order_id=? ORDER BY sort,id').all(id);
+  const fin = db.prepare('SELECT * FROM line_finishes WHERE line_id IN (SELECT id FROM order_lines WHERE order_id=?)').all(id);
+  o.lines.forEach(l => {
+    l.finishes = fin.filter(f => f.line_id === l.id).map(f => ({ name: f.name, value: f.value || '', fixed: !!f.fixed }));
+  });
+  o.phases = db.prepare(
+    'SELECT id,sort,name,min_days,max_days,descr,color,enabled FROM order_phases WHERE order_id=? ORDER BY sort,id'
+  ).all(id).map(p => ({ ...p, enabled: !!p.enabled }));
+  o.docs = db.prepare('SELECT id,kind,filename,size,uploaded_at FROM documents WHERE order_id=? ORDER BY id').all(id);
+  o.log = db.prepare('SELECT at,what,by_user FROM status_log WHERE order_id=? ORDER BY id DESC').all(id);
+  const en = o.phases.filter(p => p.enabled);
+  o.est_max = en.reduce((a, p) => a + p.max_days, 0);
+  o.est_min = en.reduce((a, p) => a + p.min_days, 0);
+  o.est_delivery = addDays(o.order_date, o.est_max);
+  o.est_delivery_min = addDays(o.order_date, o.est_min);
+  o.units = o.lines.reduce((a, l) => a + l.qty, 0);
+  return o;
+}
+const canSee = (user, o) => user && (user.role === 'admin' || user.client_id === o.client_id);
+
+/* ---------- catálogo ---------- */
+function catalogOf(clientId) {
+  const finishes = db.prepare('SELECT id,name,asks_value,value_label FROM finishes WHERE client_id=? ORDER BY sort,id').all(clientId);
+  const fById = new Map(finishes.map(f => [f.id, f]));
+  const prods = db.prepare('SELECT id,name,sizes,price FROM products WHERE client_id=? ORDER BY sort,id').all(clientId);
+  const pf = db.prepare(
+    'SELECT product_id,finish_id,mode FROM product_finishes WHERE product_id IN (SELECT id FROM products WHERE client_id=?)'
+  ).all(clientId);
+  const products = prods.map(p => {
+    const fm = {};
+    pf.filter(x => x.product_id === p.id).forEach(x => { const f = fById.get(x.finish_id); if (f) fm[f.name] = x.mode; });
+    return { name: p.name, sizes: p.sizes, price: p.price, finishes: fm };
+  });
+  const pById = new Map(prods.map(p => [p.id, p.name]));
+  const packRows = db.prepare('SELECT id,name,price FROM packs WHERE client_id=? ORDER BY sort,id').all(clientId);
+  const items = db.prepare(
+    'SELECT pack_id,product_id FROM pack_items WHERE pack_id IN (SELECT id FROM packs WHERE client_id=?) ORDER BY sort'
+  ).all(clientId);
+  const packs = packRows.map(p => ({
+    name: p.name, price: p.price,
+    items: items.filter(i => i.pack_id === p.id).map(i => pById.get(i.product_id)).filter(Boolean)
+  }));
+  return {
+    finishes: finishes.map(f => ({ name: f.name, asks_value: !!f.asks_value, value_label: f.value_label || '' })),
+    products, packs
+  };
+}
+
+/* ---------- líneas de pedido ---------- */
+function cleanLines(raw, client, enforce) {
+  const cat = enforce ? catalogOf(client.id) : null;
+  const prodMap = new Map();
+  const packSet = new Set();
+  if (cat) {
+    cat.products.forEach(p => prodMap.set(p.name, p.finishes));
+    cat.packs.forEach(p => packSet.add(p.name));
+  }
+  const out = [];
+  (Array.isArray(raw) ? raw : []).forEach(l => {
+    const kind = ['pack', 'product', 'free'].includes(l.kind) ? l.kind : 'free';
+    const name = clean(l.product_name);
+    if (!name) return;
+    const qty = Math.min(100000, Math.max(1, parseInt(l.qty, 10) || 1));
+    let fins = (Array.isArray(l.finishes) ? l.finishes : [])
+      .map(f => ({ name: clean(f.name, 100), value: clean(f.value), fixed: !!f.fixed })).filter(f => f.name);
+    if (enforce) {
+      if (kind === 'pack' && !client.allow_packs) throw bad('Este cliente no puede pedir packs');
+      if (kind === 'product' && !client.allow_products) throw bad('Este cliente no puede pedir productos sueltos del catálogo');
+      if (kind === 'free' && !client.allow_free) throw bad('Este cliente no puede añadir líneas libres');
+      if (kind === 'free') fins = [];
+      else {
+        const fm = prodMap.get(name);
+        if (!fm) throw bad('El producto «' + name + '» no está en el catálogo');
+        if (kind === 'pack' && !packSet.has(clean(l.pack_name))) throw bad('El pack «' + clean(l.pack_name) + '» no está en el catálogo');
+        const fixed = Object.keys(fm).filter(n => fm[n] === 'fixed').map(n => ({ name: n, value: '', fixed: true }));
+        const optional = fins.filter(f => fm[f.name] === 'optional').map(f => ({ ...f, fixed: false }));
+        fins = [...fixed, ...optional];
+      }
+    }
+    out.push({
+      kind, group_no: parseInt(l.group_no, 10) || 0,
+      pack_name: kind === 'pack' ? clean(l.pack_name) : null,
+      product_name: name, size: clean(l.size, 40), qty, finishes: fins
+    });
+  });
+  if (!out.length) throw bad('El pedido no tiene ninguna línea');
+  return out;
+}
+function writeLines(orderId, lines) {
+  db.prepare('DELETE FROM order_lines WHERE order_id=?').run(orderId);
+  const insL = db.prepare('INSERT INTO order_lines(order_id,sort,kind,group_no,pack_name,product_name,size,qty) VALUES (?,?,?,?,?,?,?,?)');
+  const insF = db.prepare('INSERT INTO line_finishes(line_id,name,value,fixed) VALUES (?,?,?,?)');
+  lines.forEach((l, i) => {
+    const id = insL.run(orderId, i, l.kind, l.group_no, l.pack_name, l.product_name, l.size, l.qty).lastInsertRowid;
+    l.finishes.forEach(f => insF.run(id, f.name, f.value, f.fixed ? 1 : 0));
+  });
+}
+function writePhases(orderId, phases) {
+  db.prepare('DELETE FROM order_phases WHERE order_id=?').run(orderId);
+  const ins = db.prepare('INSERT INTO order_phases(order_id,sort,name,min_days,max_days,descr,color,enabled) VALUES (?,?,?,?,?,?,?,?)');
+  phases.forEach((p, i) => ins.run(
+    orderId, i, clean(p.name, 80) || 'Fase',
+    Math.max(0, parseInt(p.min_days, 10) || 0), Math.max(0, parseInt(p.max_days, 10) || 0),
+    clean(p.descr, 300), isHex(p.color) ? p.color : '#d4af37', p.enabled === false ? 0 : 1
+  ));
+}
+
+/* ---------- avisos por email ---------- */
+function linesSummaryHtml(o) {
+  return `<p style="color:#a8a8a8;font-size:13px">${o.units} unidades · entrega estimada ${mail.esc(o.est_delivery)}</p>`;
+}
+function curPhase(o) {
+  const en = o.phases.filter(p => p.enabled);
+  if (o.status === 'Entregado') return null;
+  return en[Math.max(0, Math.min(o.cur, en.length - 1))] || null;
+}
+async function mailProgress(o) {
+  const ph = curPhase(o);
+  let title, subject;
+  if (o.status === 'Entregado') {
+    title = 'Tu pedido #' + o.id + ' ha sido entregado';
+    subject = 'Pedido #' + o.id + ' entregado';
+  } else if (o.status === 'Listo para recoger') {
+    title = 'Tu pedido #' + o.id + ' está listo para recoger';
+    subject = 'Pedido #' + o.id + ' listo para recoger';
+  } else {
+    title = 'Tu pedido #' + o.id + ' avanza' + (ph ? ': ' + ph.name : '');
+    subject = 'Pedido #' + o.id + (ph ? ' · ' + ph.name : ' · ' + o.status);
+  }
+  const body = (ph && o.status !== 'Entregado' ? `<p>${mail.esc(ph.descr || '')}</p>` : '') + linesSummaryHtml(o);
+  await mail.notifyClient(o.client_id, subject, title, body);
+}
+
+/* ---------- creación de pedidos ---------- */
+function createOrder({ client, origin, user, order_date, channel, notes, lines }) {
+  const tpl = db.prepare('SELECT * FROM phase_template ORDER BY sort,id').all();
+  const tx = db.transaction(() => {
+    const id = db.prepare(
+      'INSERT INTO orders(client_id,origin,created_by,order_date,channel,notes) VALUES (?,?,?,?,?,?)'
+    ).run(client.id, origin, user.id, order_date, clean(channel, 60), clean(notes, 2000)).lastInsertRowid;
+    writeLines(id, lines);
+    writePhases(id, tpl.map(p => ({ ...p, enabled: true })));
+    logStatus(id, origin === 'admin' ? 'Pedido introducido por MSH' : 'Pedido recibido', user);
+    return id;
+  });
+  return tx();
+}
+
+/* ---------- acceso ---------- */
+app.get('/api/me', (req, res) => {
+  const needsSetup = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role='admin'").get().n === 0;
+  if (!req.user) return res.json({ user: null, needsSetup });
+  const out = { user: { id: req.user.id, email: req.user.email, name: req.user.name, role: req.user.role }, today: todayStr() };
+  if (req.user.role === 'client') {
+    out.client = db.prepare('SELECT id,name,slug,color,crest,allow_packs,allow_products,allow_free FROM clients WHERE id=?').get(req.user.client_id);
+  }
+  res.json(out);
+});
+
+app.post('/api/setup', (req, res) => {
+  const n = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role='admin'").get().n;
+  if (n > 0) throw bad('Ya hay un administrador creado', 403);
+  const email = clean(req.body.email, 120).toLowerCase();
+  const pw = String(req.body.password || '');
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw bad('Escribe un correo válido');
+  if (pw.length < 8) throw bad('La contraseña debe tener al menos 8 caracteres');
+  const id = db.prepare("INSERT INTO users(email,name,pass,role) VALUES (?,?,?, 'admin')")
+    .run(email, clean(req.body.name, 80) || 'Administrador', auth.hashPassword(pw)).lastInsertRowid;
+  auth.startSession(res, id);
+  res.json({ ok: true });
+});
+
+app.post('/api/login', (req, res) => {
+  const email = clean(req.body.email, 120).toLowerCase();
+  const key = req.ip + '|' + email;
+  if (auth.tooManyAttempts(key)) throw bad('Demasiados intentos. Espera unos minutos.', 429);
+  const u = db.prepare('SELECT * FROM users WHERE email=?').get(email);
+  if (!u || !u.active || !auth.verifyPassword(req.body.password, u.pass)) {
+    auth.noteAttempt(key);
+    throw bad('Correo o contraseña incorrectos', 401);
+  }
+  auth.startSession(res, u.id);
+  res.json({ ok: true });
+});
+app.post('/api/logout', (req, res) => { auth.endSession(req, res); res.json({ ok: true }); });
+
+app.post('/api/me/password', auth.requireUser, (req, res) => {
+  const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id);
+  if (!auth.verifyPassword(req.body.current, u.pass)) throw bad('La contraseña actual no es correcta');
+  if (String(req.body.next || '').length < 8) throw bad('La nueva contraseña debe tener al menos 8 caracteres');
+  db.prepare('UPDATE users SET pass=? WHERE id=?').run(auth.hashPassword(req.body.next), u.id);
+  res.json({ ok: true });
+});
+
+/* ---------- clientes (admin) ---------- */
+const crestUpload = uploader({
+  dir: path.join(DATA, 'crests'), limit: 2 * 1024 * 1024, accept: /\.(png|jpe?g|webp)$/i,
+  ext: n => path.extname(n).toLowerCase()
+});
+const docUpload = uploader({
+  dir: path.join(DATA, 'uploads'), limit: 20 * 1024 * 1024, accept: /\.pdf$/i, ext: () => '.pdf'
+});
+
+app.get('/api/clients', auth.requireAdmin, (req, res) => {
+  const rows = db.prepare(
+    `SELECT c.*,
+      (SELECT COUNT(*) FROM users u WHERE u.client_id=c.id AND u.role='client') AS users_n,
+      (SELECT COUNT(*) FROM orders o WHERE o.client_id=c.id AND o.status<>'Entregado') AS active_orders,
+      (SELECT COUNT(*) FROM orders o WHERE o.client_id=c.id) AS total_orders
+     FROM clients c ORDER BY c.name COLLATE NOCASE`
+  ).all();
+  res.json(rows);
+});
+app.post('/api/clients', auth.requireAdmin, (req, res) => {
+  const name = clean(req.body.name, 120);
+  if (!name) throw bad('Escribe el nombre del cliente');
+  let slug = slugify(req.body.slug || name), base = slug, i = 2;
+  while (db.prepare('SELECT 1 FROM clients WHERE slug=?').get(slug)) slug = base + '-' + i++;
+  const id = db.prepare('INSERT INTO clients(name,slug,color,allow_packs,allow_products,allow_free) VALUES (?,?,?,?,?,?)').run(
+    name, slug, isHex(req.body.color) ? req.body.color : '#d4af37',
+    req.body.allow_packs === false ? 0 : 1, req.body.allow_products ? 1 : 0, req.body.allow_free === false ? 0 : 1
+  ).lastInsertRowid;
+  res.json(db.prepare('SELECT * FROM clients WHERE id=?').get(id));
+});
+app.put('/api/clients/:id', auth.requireAdmin, (req, res) => {
+  const c = db.prepare('SELECT * FROM clients WHERE id=?').get(req.params.id);
+  if (!c) throw bad('Cliente no encontrado', 404);
+  const b = req.body;
+  db.prepare('UPDATE clients SET name=?,color=?,allow_packs=?,allow_products=?,allow_free=?,active=? WHERE id=?').run(
+    clean(b.name, 120) || c.name, isHex(b.color) ? b.color : c.color,
+    b.allow_packs ? 1 : 0, b.allow_products ? 1 : 0, b.allow_free ? 1 : 0, b.active === false ? 0 : 1, c.id
+  );
+  res.json(db.prepare('SELECT * FROM clients WHERE id=?').get(c.id));
+});
+app.post('/api/clients/:id/crest', auth.requireAdmin, crestUpload.single('file'), (req, res) => {
+  const c = db.prepare('SELECT * FROM clients WHERE id=?').get(req.params.id);
+  if (!c) throw bad('Cliente no encontrado', 404);
+  if (!req.file) throw bad('Sube una imagen PNG, JPG o WEBP (máximo 2 MB)');
+  if (c.crest) fs.unlink(path.join(DATA, 'crests', c.crest), () => {});
+  db.prepare('UPDATE clients SET crest=? WHERE id=?').run(req.file.filename, c.id);
+  res.json({ crest: req.file.filename });
+});
+app.delete('/api/clients/:id', auth.requireAdmin, (req, res) => {
+  const n = db.prepare('SELECT COUNT(*) AS n FROM orders WHERE client_id=?').get(req.params.id).n;
+  if (n > 0) throw bad('Este cliente tiene pedidos. Desactívalo en vez de borrarlo para no perder el histórico.');
+  db.prepare('DELETE FROM clients WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
+/* usuarios de cliente */
+app.get('/api/clients/:id/users', auth.requireAdmin, (req, res) => {
+  res.json(db.prepare("SELECT id,email,name,active FROM users WHERE client_id=? AND role='client' ORDER BY id").all(req.params.id));
+});
+app.post('/api/clients/:id/users', auth.requireAdmin, (req, res) => {
+  const email = clean(req.body.email, 120).toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw bad('Escribe un correo válido');
+  if (String(req.body.password || '').length < 8) throw bad('La contraseña debe tener al menos 8 caracteres');
+  if (db.prepare('SELECT 1 FROM users WHERE email=?').get(email)) throw bad('Ya existe un usuario con ese correo');
+  const id = db.prepare("INSERT INTO users(email,name,pass,role,client_id) VALUES (?,?,?, 'client', ?)")
+    .run(email, clean(req.body.name, 80), auth.hashPassword(req.body.password), req.params.id).lastInsertRowid;
+  res.json({ id });
+});
+app.put('/api/users/:id', auth.requireAdmin, (req, res) => {
+  const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
+  if (!u) throw bad('Usuario no encontrado', 404);
+  if (req.body.password) {
+    if (String(req.body.password).length < 8) throw bad('La contraseña debe tener al menos 8 caracteres');
+    db.prepare('UPDATE users SET pass=? WHERE id=?').run(auth.hashPassword(req.body.password), u.id);
+  }
+  if (req.body.active != null) {
+    if (u.id === req.user.id) throw bad('No puedes desactivarte a ti mismo');
+    db.prepare('UPDATE users SET active=? WHERE id=?').run(req.body.active ? 1 : 0, u.id);
+  }
+  if (req.body.name != null) db.prepare('UPDATE users SET name=? WHERE id=?').run(clean(req.body.name, 80), u.id);
+  res.json({ ok: true });
+});
+app.delete('/api/users/:id', auth.requireAdmin, (req, res) => {
+  if (Number(req.params.id) === req.user.id) throw bad('No puedes borrarte a ti mismo');
+  db.prepare('DELETE FROM users WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+app.get('/api/admins', auth.requireAdmin, (req, res) => {
+  res.json(db.prepare("SELECT id,email,name,active FROM users WHERE role='admin' ORDER BY id").all());
+});
+app.post('/api/admins', auth.requireAdmin, (req, res) => {
+  const email = clean(req.body.email, 120).toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) throw bad('Escribe un correo válido');
+  if (String(req.body.password || '').length < 8) throw bad('La contraseña debe tener al menos 8 caracteres');
+  if (db.prepare('SELECT 1 FROM users WHERE email=?').get(email)) throw bad('Ya existe un usuario con ese correo');
+  db.prepare("INSERT INTO users(email,name,pass,role) VALUES (?,?,?, 'admin')")
+    .run(email, clean(req.body.name, 80) || 'Administrador', auth.hashPassword(req.body.password));
+  res.json({ ok: true });
+});
+
+/* ---------- catálogo ---------- */
+app.get('/api/clients/:id/catalog', auth.requireUser, (req, res) => {
+  const id = Number(req.params.id);
+  if (req.user.role !== 'admin' && req.user.client_id !== id) throw bad('No permitido', 403);
+  res.json(catalogOf(id));
+});
+app.put('/api/clients/:id/catalog', auth.requireAdmin, (req, res) => {
+  const cid = Number(req.params.id);
+  if (!db.prepare('SELECT 1 FROM clients WHERE id=?').get(cid)) throw bad('Cliente no encontrado', 404);
+  const b = req.body || {};
+  const finishes = (b.finishes || []).map(f => ({
+    name: clean(f.name, 100), asks_value: f.asks_value ? 1 : 0, value_label: clean(f.value_label, 60)
+  })).filter(f => f.name);
+  const products = (b.products || []).map(p => ({
+    name: clean(p.name, 150),
+    sizes: String(p.sizes || '').split(',').map(s => s.trim()).filter(Boolean).join(','),
+    price: p.price === '' || p.price == null || isNaN(Number(p.price)) ? null : Number(p.price),
+    finishes: p.finishes || {}
+  })).filter(p => p.name);
+  const packs = (b.packs || []).map(p => ({
+    name: clean(p.name, 150),
+    price: p.price === '' || p.price == null || isNaN(Number(p.price)) ? null : Number(p.price),
+    items: Array.isArray(p.items) ? p.items : []
+  })).filter(p => p.name);
+  const dup = arr => arr.find((x, i) => arr.findIndex(y => y.name.toLowerCase() === x.name.toLowerCase()) !== i);
+  let d;
+  if ((d = dup(finishes))) throw bad('Acabado repetido: ' + d.name);
+  if ((d = dup(products))) throw bad('Producto repetido: ' + d.name);
+  if ((d = dup(packs))) throw bad('Pack repetido: ' + d.name);
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM packs WHERE client_id=?').run(cid);
+    db.prepare('DELETE FROM products WHERE client_id=?').run(cid);
+    db.prepare('DELETE FROM finishes WHERE client_id=?').run(cid);
+    const fId = new Map(), pId = new Map();
+    const insF = db.prepare('INSERT INTO finishes(client_id,name,asks_value,value_label,sort) VALUES (?,?,?,?,?)');
+    finishes.forEach((f, i) => fId.set(f.name, insF.run(cid, f.name, f.asks_value, f.value_label, i).lastInsertRowid));
+    const insP = db.prepare('INSERT INTO products(client_id,name,sizes,price,sort) VALUES (?,?,?,?,?)');
+    const insPF = db.prepare('INSERT INTO product_finishes(product_id,finish_id,mode) VALUES (?,?,?)');
+    products.forEach((p, i) => {
+      const id = insP.run(cid, p.name, p.sizes, p.price, i).lastInsertRowid;
+      pId.set(p.name, id);
+      Object.keys(p.finishes).forEach(fn => {
+        const mode = p.finishes[fn];
+        if ((mode === 'fixed' || mode === 'optional') && fId.has(fn)) insPF.run(id, fId.get(fn), mode);
+      });
+    });
+    const insK = db.prepare('INSERT INTO packs(client_id,name,price,sort) VALUES (?,?,?,?)');
+    const insKI = db.prepare('INSERT INTO pack_items(pack_id,product_id,sort) VALUES (?,?,?)');
+    packs.forEach((p, i) => {
+      const id = insK.run(cid, p.name, p.price, i).lastInsertRowid;
+      p.items.forEach((pn, j) => { if (pId.has(pn)) insKI.run(id, pId.get(pn), j); });
+    });
+  })();
+  res.json(catalogOf(cid));
+});
+
+/* ---------- plantilla de fases ---------- */
+app.get('/api/phase-template', auth.requireAdmin, (req, res) => {
+  res.json(db.prepare('SELECT name,min_days,max_days,descr,color FROM phase_template ORDER BY sort,id').all());
+});
+app.put('/api/phase-template', auth.requireAdmin, (req, res) => {
+  const list = Array.isArray(req.body.phases) ? req.body.phases : [];
+  if (!list.length) throw bad('Debe haber al menos una fase');
+  db.transaction(() => {
+    db.prepare('DELETE FROM phase_template').run();
+    const ins = db.prepare('INSERT INTO phase_template(sort,name,min_days,max_days,descr,color) VALUES (?,?,?,?,?,?)');
+    list.forEach((p, i) => ins.run(
+      i, clean(p.name, 80) || 'Fase', Math.max(0, parseInt(p.min_days, 10) || 0), Math.max(0, parseInt(p.max_days, 10) || 0),
+      clean(p.descr, 300), isHex(p.color) ? p.color : '#d4af37'
+    ));
+  })();
+  res.json({ ok: true });
+});
+
+/* ---------- pedidos ---------- */
+app.get('/api/orders', auth.requireUser, (req, res) => {
+  const where = [], params = [];
+  if (req.user.role === 'client') { where.push('client_id=?'); params.push(req.user.client_id); }
+  else if (req.query.client) { where.push('client_id=?'); params.push(Number(req.query.client)); }
+  if (req.query.scope === 'active') where.push("status<>'Entregado'");
+  if (req.query.scope === 'delivered') where.push("status='Entregado'");
+  const rows = db.prepare('SELECT id FROM orders' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY id DESC').all(...params);
+  res.json(rows.map(r => loadOrder(r.id)));
+});
+app.get('/api/orders/:id', auth.requireUser, (req, res) => {
+  const o = loadOrder(Number(req.params.id));
+  if (!o || !canSee(req.user, o)) throw bad('Pedido no encontrado', 404);
+  res.json(o);
+});
+
+app.post('/api/orders', auth.requireUser, wrap(async (req, res) => {
+  const b = req.body || {};
+  let client, origin, order_date;
+  if (req.user.role === 'client') {
+    client = db.prepare('SELECT * FROM clients WHERE id=? AND active=1').get(req.user.client_id);
+    origin = 'cliente';
+    order_date = todayStr();
+  } else {
+    client = db.prepare('SELECT * FROM clients WHERE id=?').get(Number(b.client_id));
+    origin = 'admin';
+    order_date = isDate(b.order_date) ? b.order_date : todayStr();
+  }
+  if (!client) throw bad('Cliente no encontrado', 404);
+  const lines = cleanLines(b.lines, client, req.user.role === 'client');
+  const id = createOrder({ client, origin, user: req.user, order_date, channel: b.channel, notes: b.notes, lines });
+  const o = loadOrder(id);
+  if (origin === 'cliente') {
+    await mail.notifyAdmin('Nuevo pedido #' + id + ' de ' + client.name, 'Nuevo pedido #' + id + ' de ' + client.name,
+      `<p>${o.units} unidades en ${o.lines.length} líneas.</p>`);
+  } else {
+    await mail.notifyClient(client.id, 'Hemos registrado tu pedido #' + id, 'Hemos registrado tu pedido #' + id,
+      `<p>Lo hemos introducido con fecha ${mail.esc(order_date)}.</p>` + linesSummaryHtml(o));
+  }
+  res.json(o);
+}));
+
+// Edición de un pedido ya enviado: solo administradores
+app.put('/api/orders/:id', auth.requireAdmin, (req, res) => {
+  const o = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
+  if (!o) throw bad('Pedido no encontrado', 404);
+  const client = db.prepare('SELECT * FROM clients WHERE id=?').get(o.client_id);
+  const lines = cleanLines(req.body.lines, client, false);
+  db.transaction(() => {
+    writeLines(o.id, lines);
+    db.prepare('UPDATE orders SET order_date=?,channel=?,notes=?,updated_at=datetime(\'now\') WHERE id=?').run(
+      isDate(req.body.order_date) ? req.body.order_date : o.order_date, clean(req.body.channel, 60), clean(req.body.notes, 2000), o.id
+    );
+    logStatus(o.id, 'Pedido modificado por MSH', req.user);
+  })();
+  res.json(loadOrder(o.id));
+});
+
+app.put('/api/orders/:id/phases', auth.requireAdmin, (req, res) => {
+  const o = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
+  if (!o) throw bad('Pedido no encontrado', 404);
+  const phases = Array.isArray(req.body.phases) ? req.body.phases : [];
+  if (!phases.some(p => p.enabled !== false)) throw bad('Deja al menos una fase activa');
+  db.transaction(() => {
+    writePhases(o.id, phases);
+    const n = phases.filter(p => p.enabled !== false).length;
+    const cur = o.status === 'Entregado' ? n : Math.min(o.cur, n - 1);
+    const od = isDate(req.body.order_date) ? req.body.order_date : o.order_date;
+    db.prepare("UPDATE orders SET cur=?,order_date=?,updated_at=datetime('now') WHERE id=?").run(cur, od, o.id);
+    logStatus(o.id, 'Fases o plazos modificados', req.user);
+  })();
+  res.json(loadOrder(o.id));
+});
+
+app.post('/api/orders/:id/status', auth.requireAdmin, wrap(async (req, res) => {
+  const o = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
+  if (!o) throw bad('Pedido no encontrado', 404);
+  const st = req.body.status;
+  if (!STATUSES.includes(st)) throw bad('Estado no válido');
+  if (st === o.status) return res.json(loadOrder(o.id));
+  const n = db.prepare('SELECT COUNT(*) AS n FROM order_phases WHERE order_id=? AND enabled=1').get(o.id).n;
+  let cur = o.cur;
+  if (st === 'Entregado') cur = n;
+  else if (o.status === 'Entregado') cur = Math.max(0, n - 1);
+  db.transaction(() => {
+    db.prepare("UPDATE orders SET status=?,cur=?,delivered_at=?,updated_at=datetime('now') WHERE id=?")
+      .run(st, cur, st === 'Entregado' ? todayStr() : null, o.id);
+    logStatus(o.id, 'Estado: ' + o.status + ' → ' + st, req.user);
+  })();
+  const out = loadOrder(o.id);
+  await mailProgress(out);
+  res.json(out);
+}));
+
+app.post('/api/orders/:id/advance', auth.requireAdmin, wrap(async (req, res) => {
+  const o = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
+  if (!o) throw bad('Pedido no encontrado', 404);
+  const phases = db.prepare('SELECT name FROM order_phases WHERE order_id=? AND enabled=1 ORDER BY sort,id').all(o.id);
+  const n = phases.length;
+  const dir = Number(req.body.dir) < 0 ? -1 : 1;
+  let status = o.status, cur = o.cur, delivered = o.delivered_at, what;
+  if (dir > 0) {
+    if (o.status === 'Entregado') throw bad('El pedido ya está entregado');
+    cur = o.cur + 1;
+    if (cur >= n) { cur = n; status = 'Entregado'; delivered = todayStr(); what = 'Pedido completado → Entregado'; }
+    else { if (status === 'Recibido') status = 'Procesando'; what = 'Fase: ' + phases[cur].name; }
+  } else if (o.status === 'Entregado') {
+    status = 'Procesando'; cur = Math.max(0, n - 1); delivered = null; what = 'Pedido reabierto · fase: ' + phases[cur].name;
+  } else {
+    cur = Math.max(0, o.cur - 1); what = 'Fase: ' + phases[cur].name;
+  }
+  db.transaction(() => {
+    db.prepare("UPDATE orders SET status=?,cur=?,delivered_at=?,updated_at=datetime('now') WHERE id=?").run(status, cur, delivered, o.id);
+    logStatus(o.id, what, req.user);
+  })();
+  const out = loadOrder(o.id);
+  if (dir > 0) await mailProgress(out);
+  res.json(out);
+}));
+
+app.delete('/api/orders/:id', auth.requireAdmin, (req, res) => {
+  const docs = db.prepare('SELECT stored FROM documents WHERE order_id=?').all(req.params.id);
+  db.prepare('DELETE FROM orders WHERE id=?').run(req.params.id);
+  docs.forEach(d => fs.unlink(path.join(DATA, 'uploads', d.stored), () => {}));
+  res.json({ ok: true });
+});
+
+/* ---------- documentos (albarán y factura) ---------- */
+app.post('/api/orders/:id/docs', auth.requireAdmin, docUpload.single('file'), (req, res) => {
+  const o = db.prepare('SELECT id FROM orders WHERE id=?').get(req.params.id);
+  if (!o) throw bad('Pedido no encontrado', 404);
+  const kind = req.body.kind === 'factura' ? 'factura' : 'albaran';
+  if (!req.file) throw bad('Sube un archivo PDF (máximo 20 MB)');
+  db.prepare('INSERT INTO documents(order_id,kind,filename,stored,size) VALUES (?,?,?,?,?)')
+    .run(o.id, kind, clean(req.file.originalname, 200), req.file.filename, req.file.size);
+  logStatus(o.id, (kind === 'factura' ? 'Factura' : 'Albarán') + ' subido', req.user);
+  res.json(loadOrder(o.id));
+});
+app.get('/api/docs/:id', auth.requireUser, (req, res) => {
+  const d = db.prepare('SELECT d.*,o.client_id FROM documents d JOIN orders o ON o.id=d.order_id WHERE d.id=?').get(req.params.id);
+  if (!d || (req.user.role !== 'admin' && req.user.client_id !== d.client_id)) throw bad('Documento no encontrado', 404);
+  res.download(path.join(DATA, 'uploads', d.stored), d.filename);
+});
+app.delete('/api/docs/:id', auth.requireAdmin, (req, res) => {
+  const d = db.prepare('SELECT * FROM documents WHERE id=?').get(req.params.id);
+  if (d) {
+    db.prepare('DELETE FROM documents WHERE id=?').run(d.id);
+    fs.unlink(path.join(DATA, 'uploads', d.stored), () => {});
+  }
+  res.json({ ok: true });
+});
+
+/* ---------- producción ---------- */
+function productionData(q) {
+  const where = [], params = [];
+  const ids = String(q.orders || '').split(',').map(Number).filter(Boolean);
+  if (ids.length) { where.push('id IN (' + ids.map(() => '?').join(',') + ')'); params.push(...ids); }
+  else if (q.scope !== 'all') where.push("status<>'Entregado'");
+  if (q.client) { where.push('client_id=?'); params.push(Number(q.client)); }
+  const rows = db.prepare('SELECT id FROM orders' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY id').all(...params);
+  const orders = rows.map(r => loadOrder(r.id));
+  const art = new Map(), fin = new Map();
+  orders.forEach(o => o.lines.forEach(l => {
+    const label = l.kind === 'free' ? 'Línea libre: ' + l.product_name : l.product_name;
+    const key = label + '|' + (l.size || '');
+    const a = art.get(key) || { article: label, size: l.size || '', qty: 0, orders: new Set() };
+    a.qty += l.qty; a.orders.add(o.id); art.set(key, a);
+    l.finishes.forEach(f => {
+      const x = fin.get(f.name) || { finish: f.name, qty: 0, by_product: new Map(), values: [] };
+      x.qty += l.qty;
+      x.by_product.set(l.product_name, (x.by_product.get(l.product_name) || 0) + l.qty);
+      if (f.value) x.values.push({ order_id: o.id, product: l.product_name, size: l.size, qty: l.qty, value: f.value });
+      fin.set(f.name, x);
+    });
+  }));
+  return {
+    orders: orders.map(o => ({
+      id: o.id, client_id: o.client_id, client_name: o.client_name, order_date: o.order_date, status: o.status,
+      est_delivery: o.est_delivery, lines: o.lines
+    })),
+    articles: [...art.values()].map(a => ({ ...a, orders: [...a.orders] })).sort((a, b) => a.article.localeCompare(b.article) || a.size.localeCompare(b.size)),
+    finishes: [...fin.values()].map(f => ({ ...f, by_product: [...f.by_product].map(([product, qty]) => ({ product, qty })) }))
+      .sort((a, b) => b.qty - a.qty)
+  };
+}
+app.get('/api/production', auth.requireAdmin, (req, res) => res.json(productionData(req.query)));
+app.get('/api/production.csv', auth.requireAdmin, (req, res) => {
+  const d = productionData(req.query);
+  const q = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const rows = [['RESUMEN POR ARTÍCULO'], ['Artículo', 'Talla', 'Unidades', 'Pedidos']];
+  d.articles.forEach(a => rows.push([a.article, a.size, a.qty, a.orders.map(x => '#' + x).join(' ')]));
+  rows.push([], ['RESUMEN POR ACABADO'], ['Acabado', 'Unidades', 'Detalle por producto']);
+  d.finishes.forEach(f => rows.push([f.finish, f.qty, f.by_product.map(p => p.product + ' x' + p.qty).join(' | ')]));
+  rows.push([], ['DETALLE DE ACABADOS CON DATO (dorsales, iniciales...)'], ['Acabado', 'Dato', 'Producto', 'Talla', 'Unidades', 'Pedido']);
+  d.finishes.forEach(f => f.values.forEach(v => rows.push([f.finish, v.value, v.product, v.size, v.qty, '#' + v.order_id])));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="produccion.csv"');
+  res.send('﻿' + rows.map(r => r.map(q).join(';')).join('\r\n'));
+});
+
+/* ---------- ajustes ---------- */
+app.get('/api/settings', auth.requireAdmin, (req, res) => {
+  res.json({
+    brand_name: getSetting('brand_name', 'MSH Madrid'),
+    public_url: getSetting('public_url'),
+    notify_email: getSetting('notify_email'),
+    smtp_host: getSetting('smtp_host'),
+    smtp_port: getSetting('smtp_port', '587'),
+    smtp_user: getSetting('smtp_user'),
+    smtp_from: getSetting('smtp_from'),
+    smtp_pass_set: !!getSetting('smtp_pass')
+  });
+});
+app.put('/api/settings', auth.requireAdmin, (req, res) => {
+  const b = req.body || {};
+  ['brand_name', 'public_url', 'notify_email', 'smtp_host', 'smtp_port', 'smtp_user', 'smtp_from'].forEach(k => {
+    if (b[k] != null) setSetting(k, clean(b[k], 200));
+  });
+  if (b.smtp_pass) setSetting('smtp_pass', String(b.smtp_pass));
+  res.json({ ok: true });
+});
+app.post('/api/settings/test-email', auth.requireAdmin, wrap(async (req, res) => {
+  const to = clean(req.body.to, 120);
+  if (!to) throw bad('Escribe un correo de destino');
+  const ok = await mail.send(to, 'Prueba de correo · MSH Pedidos', mail.layout('Funciona', '<p>Este es un correo de prueba de la app de pedidos.</p>'));
+  const last = db.prepare('SELECT error FROM email_log ORDER BY id DESC LIMIT 1').get();
+  res.json({ ok, error: ok ? null : (last && last.error) });
+}));
+app.get('/api/emails', auth.requireAdmin, (req, res) => {
+  res.json(db.prepare('SELECT at,to_addr,subject,ok,error FROM email_log ORDER BY id DESC LIMIT 40').all());
+});
+
+/* ---------- estáticos y errores ---------- */
+app.static('/crests', path.join(DATA, 'crests'), { maxAge: 604800 });
+app.static('/', path.join(__dirname, '..', 'public'));
+app.get('/healthz', (req, res) => res.send('ok'));
+app.onError((err, req, res) => {
+  if (!err.status) console.error(err);
+  res.status(err.status || 500).json({ error: err.status ? err.message : 'Error interno del servidor' });
+});
+
+app.listen(PORT, '0.0.0.0', () => console.log('MSH Pedidos escuchando en el puerto ' + PORT));

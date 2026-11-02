@@ -1,0 +1,12 @@
+services:
+  msh-pedidos:
+    build: .
+    container_name: msh-pedidos
+    restart: unless-stopped
+    ports:
+      - "3081:3081"
+    environment:
+      - TZ=Europe/Madrid
+      - DATA_DIR=/app/data
+    volumes:
+      - ./data:/app/data

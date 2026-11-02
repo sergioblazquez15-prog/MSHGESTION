@@ -1,0 +1,13 @@
+{
+  "name": "msh-pedidos",
+  "version": "1.0.0",
+  "description": "Gestión de pedidos multi-cliente de MSH Madrid",
+  "main": "server/index.js",
+  "private": true,
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}
