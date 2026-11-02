@@ -172,20 +172,25 @@ CREATE TABLE IF NOT EXISTS email_log(
 
 
 /* ---------- Migraciones (conservan todos los datos existentes) ---------- */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const ver = db.prepare('PRAGMA user_version').get().user_version;
 if (ver < SCHEMA_VERSION) {
-  if (existed && ver === 0) {
+  if (existed && ver < SCHEMA_VERSION) {
     // Copia de seguridad automática antes de tocar una base de datos de una versión anterior
     try {
       db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      fs.copyFileSync(DBFILE, path.join(DATA, 'backups', 'msh-antes-de-v2-' + stamp + '.db'));
+      fs.copyFileSync(DBFILE, path.join(DATA, 'backups', 'msh-antes-de-v' + SCHEMA_VERSION + '-' + stamp + '.db'));
     } catch (e) { console.error('No se pudo hacer la copia de seguridad previa:', e.message); }
   }
   const hasCol = (t, c) => db.prepare('PRAGMA table_info(' + t + ')').all().some(x => x.name === c);
   const addCol = (t, c, def) => { if (!hasCol(t, c)) db.exec('ALTER TABLE ' + t + ' ADD COLUMN ' + c + ' ' + def); };
   db.transaction(() => {
+    // v3: precios (nulos = sin precio puesto)
+    addCol('finishes', 'price', 'REAL');
+    addCol('order_lines', 'unit_price', 'REAL');
+    addCol('order_lines', 'pack_price', 'REAL');
+    addCol('line_finishes', 'price', 'REAL');
     addCol('orders', 'number', 'INTEGER');
     db.exec('UPDATE orders SET number=id WHERE number IS NULL');
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_number ON orders(number)');

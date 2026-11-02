@@ -60,11 +60,14 @@
       } else rows.push(l);
     });
     const fins = l => (l.finishes || []).map(f => '<span class="fin">' + esc(f.name) + (f.value ? ': ' + esc(f.value) : '') + '</span>').join('') || '<span class="mini">—</span>';
-    const line = (l, qty) => '<tr><td>' + thumb(l.photo) + '</td><td>' + esc(l.product_name) + (l.kind === 'free' ? ' <span class="mini">(fuera de catálogo)</span>' : '') + '</td><td>' + (esc(l.size) || '—') + '</td><td>' + (esc(l.color) || '—') + '</td><td>' + fins(l) + '</td><td style="text-align:right"><b>' + qty + '</b></td></tr>';
+    const pr = o.total != null;
+    const amt = l => pr ? '<td style="text-align:right">' + (l.amount != null && (l.unit_price != null || l.kind === 'pack') ? money(l.amount) : '—') + '</td>' : '';
+    const line = (l, qty) => '<tr><td>' + thumb(l.photo) + '</td><td>' + esc(l.product_name) + (l.kind === 'free' ? ' <span class="mini">(fuera de catálogo)</span>' : '') + '</td><td>' + (esc(l.size) || '—') + '</td><td>' + (esc(l.color) || '—') + '</td><td>' + fins(l) + '</td><td style="text-align:right"><b>' + qty + '</b></td>' + (pr ? '<td style="text-align:right">' + (l.kind === 'pack' ? '<span class="mini">en pack</span>' : (l.unit_price != null ? money(l.unit_price) : '—')) + '</td>' + amt(l) : '') + '</tr>';
     let body = '';
     rows.forEach(g => {
       if (g.lines) {
-        body += '<tr class="grp"><td colspan="5">' + esc(g.pack) + '</td><td style="text-align:right">× ' + g.qty + '</td></tr>';
+        const pp = g.lines[0].pack_price, gt = g.lines.reduce((a, l) => a + (l.amount || 0), 0);
+        body += '<tr class="grp"><td colspan="5">' + esc(g.pack) + '</td><td style="text-align:right">× ' + g.qty + '</td>' + (pr ? '<td style="text-align:right">' + (pp != null ? money(pp) : '—') + '</td><td style="text-align:right">' + money(gt) + '</td>' : '') + '</tr>';
         g.lines.forEach(l => { body += line(l, g.qty); });
       } else body += line(g, g.qty);
     });
@@ -79,7 +82,8 @@
       '<div><span>' + (o.status === 'Entregado' ? 'Entregado el' : 'Entrega estimada') + '</span><b>' + (o.status === 'Entregado' ? fmt(o.delivered_at) : (o.est_delivery ? fmt(o.est_delivery) : '—')) + '</b></div>' +
       '<div><span>Artículos</span><b>' + o.units + ' uds</b></div></div>' +
       cron +
-      '<h2>Artículos pedidos</h2><table><thead><tr><th style="width:44px"></th><th>Artículo</th><th>Talla</th><th>Color</th><th>Acabados</th><th style="text-align:right">Uds</th></tr></thead><tbody>' + body + '</tbody></table>' +
+      '<h2>Artículos pedidos</h2><table><thead><tr><th style="width:44px"></th><th>Artículo</th><th>Talla</th><th>Color</th><th>Acabados</th><th style="text-align:right">Uds</th>' + (pr ? '<th style="text-align:right">Precio</th><th style="text-align:right">Importe</th>' : '') + '</tr></thead><tbody>' + body + '</tbody></table>' +
+      (pr ? '<div style="text-align:right;margin-top:10px;font-size:15px"><div>Base imponible: ' + money(o.total) + '</div><div>IVA 21 %: ' + money(o.iva) + '</div><b style="font-size:17px">Total con IVA: ' + money(o.total_iva) + '</b>' + (o.unpriced ? '<div class="mini">' + o.unpriced + ' línea(s) sin precio no están incluidas</div>' : '') + '</div>' : '') +
       (o.notes ? '<h2>Notas</h2><p>' + esc(o.notes).replace(/\n/g, '<br>') + '</p>' : '') +
       '<div class="pr-foot">Documento generado el ' + fmt(S.today) + '. MSH Madrid.</div>';
     const imgs = [...document.images].filter(i => !i.complete);

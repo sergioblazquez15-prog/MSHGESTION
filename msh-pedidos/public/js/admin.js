@@ -12,6 +12,7 @@ const ADMIN_VIEWS = {
   async client(rest) { return A.clientEdit(+rest[0]); },
   async catalog(rest) { return A.catalog(rest[0]); },
   async prod() { return A.production(); },
+  async stats() { return ST.view(); },
   async phases() { return A.template(); },
   async settings() { return A.settings(); }
 };
@@ -187,7 +188,8 @@ A.newOrder = async function (clientId) {
      <div class="field"><label>Notas (opcional)</label><input type="text" id="n-notes"></div></div>
      <div class="field"><label>Pedido inicial del cliente, para cotejar (foto, PDF o Excel; el cliente no lo ve)</label><input type="file" id="n-files" multiple accept="image/*,.pdf,.xls,.xlsx,.csv"></div></div></div>
     ${OF.html()}
-    <div class="sendbar sticky"><div><p>Total</p><strong><span id="of-count">0</span> artículos</strong></div><button class="btn amber" onclick="A.sendNew()">Crear pedido</button></div>`
+    <div class="sendbar sticky"><div><p>Total</p><strong><span id="of-count">0</span> artículos</strong></div><button class="btn amber" onclick="A.sendNew()">Crear pedido</button></div>`,
+    after: () => OF.upd()
   };
 };
 A.sendNew = async () => safe(async () => {
@@ -215,7 +217,8 @@ A.editOrder = async function (id) {
      <div class="field"><label>El cliente podrá ver</label>${sel('e-view', [['estado', 'Solo el estado del pedido'], ['cronograma', 'El cronograma completo']], o.client_view)}</div></div>
      <div class="field"><label>Notas</label><textarea id="e-notes">${esc(o.notes || '')}</textarea></div></div></div>
     ${OF.html()}
-    <div class="sendbar sticky"><div><p>Total</p><strong><span id="of-count">${OF.count()}</span> artículos</strong></div><button class="btn amber" onclick="A.saveEdit()">Guardar cambios</button></div>`
+    <div class="sendbar sticky"><div><p>Total</p><strong><span id="of-count">${OF.count()}</span> artículos</strong></div><button class="btn amber" onclick="A.saveEdit()">Guardar cambios</button></div>`,
+    after: () => OF.upd()
   };
 };
 A.saveEdit = async () => safe(async () => {
@@ -328,7 +331,7 @@ A.catalog = async function (clientId) {
   A.catClient = clientId ? +clientId : (A.catClient && A.clients.some(c => c.id === A.catClient) ? A.catClient : A.clients[0].id);
   const cat = await api('GET', `/api/clients/${A.catClient}/catalog`);
   // Estado editable con ids locales estables
-  const fin = cat.finishes.map(f => ({ id: kid(), name: f.name, asks_value: f.asks_value, value_label: f.value_label }));
+  const fin = cat.finishes.map(f => ({ id: kid(), name: f.name, asks_value: f.asks_value, value_label: f.value_label, price: f.price == null ? '' : f.price }));
   const prod = cat.products.map(p => ({ id: kid(), name: p.name, photo: p.photo || '', sizes: p.sizes, price: p.price == null ? '' : p.price, finishes: { ...p.finishes } }));
   const pack = cat.packs.map(p => ({ id: kid(), name: p.name, price: p.price == null ? '' : p.price, items: p.items.map(n => (prod.find(x => x.name === n) || {}).id).filter(Boolean) }));
   A.K = { fin, prod, pack, dirty: false };
@@ -340,10 +343,11 @@ A.dirty = () => { A.K.dirty = true; const b = $('cat-save'); if (b) b.disabled =
 A.catHTML = function () {
   const K = A.K;
   const finBox = `<div class="panel"><div class="ph"><h2>1. Acabados</h2></div><div class="pb">
-   <p class="hint" style="margin-top:0">Lo que se le puede hacer a una prenda: escudo, dorsal, publicidad… Si el acabado pide un dato (el número del dorsal, unas iniciales), márcalo.</p>
+   <p class="hint" style="margin-top:0">Lo que se le puede hacer a una prenda: escudo, dorsal, publicidad… Si el acabado pide un dato (el número del dorsal, unas iniciales), márcalo. El precio del acabado se suma por unidad solo cuando es opcional y se elige; los acabados fijos van incluidos en el precio del producto.</p>
    ${K.fin.map((f, i) => `<div class="row" style="margin-bottom:8px"><input type="text" style="min-width:200px" placeholder="Nombre del acabado" value="${esc(f.name)}" oninput="A.renFin(${i},this.value)" onchange="A.catRefresh()">
      <label class="cfgbox"><input type="checkbox" ${f.asks_value ? 'checked' : ''} onchange="A.K.fin[${i}].asks_value=this.checked;A.dirty();A.catRefresh()"> Pide un dato</label>
      ${f.asks_value ? `<input type="text" style="width:150px" placeholder="Qué dato (ej. Nº dorsal)" value="${esc(f.value_label)}" oninput="A.K.fin[${i}].value_label=this.value;A.dirty()">` : ''}
+     <input type="number" step="0.01" min="0" style="width:120px" placeholder="+ € / ud" title="Suplemento por unidad cuando el acabado es opcional y se elige" value="${esc(f.price)}" oninput="A.K.fin[${i}].price=this.value;A.dirty()">
      <button class="x" onclick="A.rm('fin',${i})">✕</button></div>`).join('')}
    <button class="btn ghost sm" onclick="A.addFin()">+ Añadir acabado</button></div></div>`;
   const names = K.fin.filter(f => f.name.trim());
@@ -371,7 +375,7 @@ A.renFin = (i, v) => {
   A.K.prod.forEach(p => { if (old in p.finishes && old !== v) { p.finishes[v] = p.finishes[old]; delete p.finishes[old]; } });
   A.dirty();
 };
-A.addFin = () => { A.K.fin.push({ id: kid(), name: '', asks_value: false, value_label: '' }); A.dirty(); A.catRefresh(); };
+A.addFin = () => { A.K.fin.push({ id: kid(), name: '', asks_value: false, value_label: '', price: '' }); A.dirty(); A.catRefresh(); };
 A.addProd = () => { A.K.prod.push({ id: kid(), name: '', photo: '', sizes: '', price: '', finishes: {} }); A.dirty(); A.catRefresh(); };
 A.addPack = () => { A.K.pack.push({ id: kid(), name: '', price: '', items: [] }); A.dirty(); A.catRefresh(); };
 A.prodPhoto = async (i, input) => {
@@ -393,7 +397,7 @@ A.togglePackItem = (pi, prodId, on, el) => {
 A.saveCat = async () => safe(async () => {
   const K = A.K, byId = new Map(K.prod.map(p => [p.id, p.name.trim()]));
   const body = {
-    finishes: K.fin.map(f => ({ name: f.name.trim(), asks_value: f.asks_value, value_label: f.value_label })),
+    finishes: K.fin.map(f => ({ name: f.name.trim(), asks_value: f.asks_value, value_label: f.value_label, price: f.price })),
     products: K.prod.map(p => ({ name: p.name.trim(), photo: p.photo, sizes: p.sizes, price: p.price, finishes: p.finishes })),
     packs: K.pack.map(p => ({ name: p.name.trim(), price: p.price, items: p.items.map(id => byId.get(id)).filter(Boolean) }))
   };

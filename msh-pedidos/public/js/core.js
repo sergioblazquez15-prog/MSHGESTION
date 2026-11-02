@@ -90,13 +90,14 @@ const IC = {
   clients: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 3-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.7a3.5 3.5 0 0 1 0 6.6M18.5 14.3c1.9.8 3 2.7 3 5.7"/>',
   catalog: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
   prod: '<path d="M3.5 20.5V9l6 4V9l6 4V4.5h5v16h-17z"/>',
+  stats: '<path d="M4 20.5h16"/><rect x="5" y="11" width="3.5" height="7" rx="1"/><rect x="10.3" y="6" width="3.5" height="12" rx="1"/><rect x="15.6" y="9" width="3.5" height="9" rx="1"/>',
   phases: '<rect x="3.5" y="5" width="17" height="15.5" rx="4"/><path d="M8 3v4M16 3v4M3.5 10.5h17"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/>'
 };
 const ico = k => `<svg viewBox="0 0 24 24" aria-hidden="true">${IC[k]}</svg>`;
 
 /* ===== arranque, acceso y navegación ===== */
-const ADMIN_NAV = [['orders', 'Pedidos'], ['hist', 'Histórico'], ['new', 'Nuevo'], ['clients', 'Clientes'], ['catalog', 'Catálogo'], ['prod', 'Producción'], ['phases', 'Plazos'], ['settings', 'Ajustes']];
+const ADMIN_NAV = [['orders', 'Pedidos'], ['hist', 'Histórico'], ['new', 'Nuevo'], ['clients', 'Clientes'], ['catalog', 'Catálogo'], ['prod', 'Producción'], ['stats', 'Informes'], ['phases', 'Plazos'], ['settings', 'Ajustes']];
 const CLIENT_NAV = [['new', 'Nuevo pedido'], ['mine', 'Mis pedidos']];
 const NAV_ALIAS = { detail: 'orders', edit: 'orders', client: 'clients' };
 
@@ -279,13 +280,18 @@ function linesHTML(o) {
     } else out.push(l);
   });
   const sub = l => `<span class="mini">${l.size ? '· talla ' + esc(l.size) : ''}${l.color ? ' · color ' + esc(l.color) : ''}${l.kind === 'free' ? ' · fuera de catálogo' : ''}</span>`;
-  return out.map(g => {
+  const priced = o.total != null;     // solo el administrador recibe precios
+  const noPrice = '<span class="mini">sin precio</span>';
+  const body = out.map(g => {
     if (g.lines) {
-      return `<div class="box" style="padding:12px 16px"><div style="font-weight:600;margin-bottom:6px">${esc(g.name)} <span class="mini">× ${g.lines[0].qty}</span></div>
+      const gt = g.lines.reduce((a, l) => a + (l.amount || 0), 0), pp = g.lines[0].pack_price;
+      return `<div class="box" style="padding:12px 16px"><div style="font-weight:600;margin-bottom:6px;display:flex;justify-content:space-between;gap:10px"><span>${esc(g.name)} <span class="mini">× ${g.lines[0].qty}${priced ? (pp != null ? ' · ' + money(pp) + ' / pack' : '') : ''}</span></span>${priced ? (pp != null ? `<span class="amt pricetag">${money(gt)}</span>` : noPrice) : ''}</div>
         ${g.lines.map(l => `<div class="sumrow" style="padding:7px 0"><span>${thumb(l.photo)}${esc(l.product_name)} ${sub(l)}</span><span>${finChips(l.finishes) || '<span class="mini">sin acabado</span>'}</span></div>`).join('')}</div>`;
     }
-    return `<div class="sumrow"><span>${thumb(g.photo)}${g.qty} × ${esc(g.product_name)} ${sub(g)}</span><span>${finChips(g.finishes) || '<span class="mini">sin acabado</span>'}</span></div>`;
+    return `<div class="sumrow"><span>${thumb(g.photo)}${g.qty} × ${esc(g.product_name)} ${sub(g)}</span><span>${finChips(g.finishes) || '<span class="mini">sin acabado</span>'}${priced ? ' ' + (g.unit_price != null ? `<span class="amt pricetag" title="${g.qty} × ${money(g.unit_price)}">${money(g.amount)}</span>` : noPrice) : ''}</span></div>`;
   }).join('');
+  const foot = priced ? `<div class="sumrow totalrow"><span><b>Base imponible</b>${o.unpriced ? ` <span class="mini">· ${o.unpriced} sin precio</span>` : ''}</span><span class="pricetag">${money(o.total)}</span></div><div class="sumrow"><span>IVA 21 %</span><span class="pricetag">${money(o.iva)}</span></div><div class="sumrow"><span><b>Total con IVA</b></span><span class="amt pricetag" style="font-size:20px">${money(o.total_iva)}</span></div>` : '';
+  return body + foot;
 }
 const STATUS_STEPS = ['Recibido', 'Procesando', 'Listo para recoger', 'Entregado'];
 function estadoBox(o) {

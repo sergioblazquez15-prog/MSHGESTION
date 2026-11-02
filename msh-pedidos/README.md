@@ -36,3 +36,8 @@ La base de datos se actualiza sola al arrancar y antes de migrar guarda una copi
     git pull
     cd /root/MSHGESTION/msh-pedidos
     docker compose up -d --build
+
+## Novedades v3
+- **Precios**: se introducen siempre **sin IVA** (base imponible) en el catálogo (productos, packs y suplemento de acabados opcionales) y en las líneas libres del pedido. El pedido calcula base + IVA 21 % = total con IVA. Los clientes no ven precios.
+- **Informes**: nueva pestaña con KPIs, gráfico por meses, reparto por tipo, ventas por cliente y por producto (con tallas), filtros por clientes/periodo/estado y generación de informe en PDF.
+- Al actualizar, la base de datos se migra sola y se guarda una copia en data/backups.

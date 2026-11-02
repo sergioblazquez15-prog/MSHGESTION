@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Informe · MSH</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/app.css">
+<style>
+  :root.rep{--st-ink:#141414;--st-soft:#666;--st-grid:#e6e6e6;--st-base:#9a9a9a;--st-surface:#fff;--ink:#141414;--soft:#666;--line:#ececec;--line2:#d9d2b3;--bg2:#fff;--bg3:#faf8f0;--accent:#8a6d12;}
+  html,body{background:#fff;color:#141414;}
+  body{font-size:13px;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  .pr{max-width:900px;margin:0 auto;padding:28px 24px 60px;}
+  .noprint{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-bottom:22px;flex-wrap:wrap;}
+  .pr-head{border-bottom:2px solid #d4af37;padding-bottom:14px;margin-bottom:18px;}
+  .pr-head h1{font-size:28px;color:#141414;margin:0;line-height:1.15;}
+  .pr-brand{font-family:var(--serif);font-size:14px;color:#8a6d12;margin-bottom:4px;}
+  .pr-sub{display:flex;gap:22px;flex-wrap:wrap;margin-top:10px;font-size:12.5px;color:#555;} .pr-sub b{color:#141414;}
+  .pr .panel{background:#fff;border:1px solid #e3e3e3;border-radius:14px;box-shadow:none;break-inside:avoid;page-break-inside:avoid;margin:0 0 16px;}
+  .pr .panel .ph{border-bottom:1px solid #ececec;} .pr .panel h2,.pr h2{color:#141414;font-size:19px;}
+  .pr .kpi{background:#faf8f0;border-color:#e3dcc0;} .pr .kpi b{color:#141414;font-size:24px;}
+  .pr .sttable{min-width:0;width:100%;} .pr .tblwrap{overflow:visible;} .pr .sttable{font-size:10.5px;table-layout:auto;} .pr .sttable th,.pr .sttable td{padding:6px 4px;} .pr .sttable .r{white-space:normal;} .pr .sttable td.nm{min-width:90px;} .pr .stgrid{grid-template-columns:1.6fr 1fr;} .pr .sttable th{color:#555;border-bottom:1px solid #d9d2b3;} .pr .sttable td{border-bottom:1px solid #ececec;color:#141414;}
+  .pr .sttable thead{display:table-header-group;} .pr .sttable tr{break-inside:avoid;}
+  .pr .stalt{display:none;}
+  .pr .notice{background:#fbf6e3;border:1px solid #e3dcc0;color:#141414;}
+  .pr-foot{margin-top:26px;font-size:11px;color:#888;border-top:1px solid #e3e3e3;padding-top:10px;}
+  .btn{text-decoration:none;display:inline-block;}
+  @media print{ .noprint{display:none !important;} .pr{padding:0;max-width:none;} @page{size:A4;margin:12mm;} .kpis{grid-template-columns:repeat(5,1fr);} .stgrid{grid-template-columns:1.6fr 1fr;} }
+</style>
+</head>
+<body>
+<div class="pr" id="pr"><p>Cargando…</p></div>
+<script src="/js/core.js"></script>
+<script src="/js/stats.js"></script>
+<script>
+(async function () {
+  const root = document.getElementById('pr');
+  try {
+    const me = await fetch('/api/me', { credentials: 'same-origin' }).then(r => r.json());
+    if (!me.user || me.user.role !== 'admin') { root.innerHTML = '<p>Este informe es solo para administradores. <a href="/">Entra de nuevo</a> y vuelve a pulsar «Generar informe PDF».</p>'; return; }
+    if (me.today) S.today = me.today;
+    const q = new URLSearchParams(location.search);
+    ST.light = true; ST.static = true; document.documentElement.classList.add('rep');
+    ST.f.measure = q.get('measure') === 'amount' ? 'amount' : 'qty';
+    ST.f.preset = 'custom'; ST.f.from = q.get('from') || ''; ST.f.to = q.get('to') || '';
+    const qs = new URLSearchParams(q); qs.delete('measure');
+    const r = await fetch('/api/stats?' + qs.toString(), { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('No se pudieron cargar los datos');
+    ST.data = await r.json();
+    const ids = (q.get('clients') || '').split(',').map(Number).filter(Boolean);
+    let who = 'Todos los clientes';
+    if (ids.length) {
+      const cl = await fetch('/api/clients', { credentials: 'same-origin' }).then(r => r.json());
+      who = cl.filter(c => ids.includes(c.id)).map(c => c.name).join(', ') || 'Clientes seleccionados';
+    }
+    const st = { all: 'Todos los pedidos', active: 'Pedidos en curso', delivered: 'Pedidos entregados' }[q.get('status') || 'all'];
+    document.title = 'Informe · ' + who;
+    root.innerHTML =
+      '<div class="noprint"><span class="mini">Para guardar el PDF, en la ventana de impresión elige «Guardar como PDF».</span><button class="btn amber" onclick="window.print()">Imprimir o guardar PDF</button></div>' +
+      '<div class="pr-head"><div class="pr-brand">MSH Madrid</div><h1>Informe de pedidos</h1>' +
+      '<div class="pr-sub"><span>Clientes: <b>' + esc(who) + '</b></span><span>Periodo: <b>' + esc(ST.periodText()) + '</b></span><span>' + esc(st) + '</span><span>Medido en: <b>' + (ST.isQty() ? 'unidades' : 'importe (sin IVA)') + '</b></span></div></div>' +
+      ST.body(true) +
+      '<div class="pr-foot">Informe generado el ' + fmt(S.today) + '. MSH Madrid.</div>';
+    if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch (e) { /* da igual */ } }
+    setTimeout(() => window.print(), 600);
+  } catch (e) {
+    root.innerHTML = '<p>No se pudo preparar el informe: ' + esc(e.message) + '</p>';
+  }
+})();
+</script>
+</body>
+</html>

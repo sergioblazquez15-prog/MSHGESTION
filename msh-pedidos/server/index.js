@@ -30,6 +30,13 @@ const isHex = c => /^#[0-9a-fA-F]{6}$/.test(String(c || ''));
 const PHOTO_RE = /^[a-f0-9]{28}\.(png|jpe?g|webp)$/;
 const validPhoto = f => (PHOTO_RE.test(String(f || '')) && fs.existsSync(path.join(DATA, 'photos', String(f)))) ? String(f) : '';
 const orderRef = o => 'pedido ' + o.number + (o.title ? ' - ' + o.title : '');
+const money = v => {
+  if (v === '' || v == null) return null;
+  const n = Number(String(v).replace(',', '.'));
+  return isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : null;
+};
+const IVA = 0.21;
+const r2 = n => Math.round(n * 100) / 100;
 const nextNumber = () => (db.prepare('SELECT MAX(number) AS m FROM orders').get().m || 0) + 1;
 function pickNumber(raw, selfId) {
   if (raw === '' || raw == null) return null;
@@ -51,8 +58,29 @@ function loadOrder(id) {
   o.lines = db.prepare('SELECT * FROM order_lines WHERE order_id=? ORDER BY sort,id').all(id);
   const fin = db.prepare('SELECT * FROM line_finishes WHERE line_id IN (SELECT id FROM order_lines WHERE order_id=?)').all(id);
   o.lines.forEach(l => {
-    l.finishes = fin.filter(f => f.line_id === l.id).map(f => ({ name: f.name, value: f.value || '', fixed: !!f.fixed }));
+    l.finishes = fin.filter(f => f.line_id === l.id).map(f => ({ name: f.name, value: f.value || '', fixed: !!f.fixed, price: f.price }));
   });
+  // importes: línea suelta = uds × (precio + acabados); pack = uds × precio del pack (una vez por bloque) + acabados
+  const seenPack = new Set();
+  let total = 0, unpriced = 0;
+  o.lines.forEach(l => {
+    const fsum = l.finishes.reduce((a, f) => a + (f.price || 0), 0);
+    let base = 0, has;
+    if (l.kind === 'pack') {
+      const k = l.group_no;
+      if (!seenPack.has(k)) { seenPack.add(k); base = (l.pack_price || 0); has = l.pack_price != null; if (!has) unpriced++; }
+      l.amount = r2(l.qty * (base + fsum));
+    } else {
+      base = l.unit_price || 0; has = l.unit_price != null;
+      if (!has) unpriced++;
+      l.amount = r2(l.qty * (base + fsum));
+    }
+    total += l.amount;
+  });
+  o.total = r2(total);                 // base imponible (precios sin IVA)
+  o.iva = r2(total * IVA);
+  o.total_iva = r2(total + o.iva);
+  o.unpriced = unpriced;
   o.phases = db.prepare(
     'SELECT id,sort,name,min_days,max_days,descr,color,enabled FROM order_phases WHERE order_id=? ORDER BY sort,id'
   ).all(id).map(p => ({ ...p, enabled: !!p.enabled }));
@@ -69,6 +97,12 @@ function loadOrder(id) {
 function present(user, o) {
   if (!user || user.role !== 'client') return o;
   const out = { ...o, docs: o.docs.filter(d => d.kind !== 'pedido'), log: [] };
+  // los clientes no ven precios
+  delete out.total; delete out.iva; delete out.total_iva; delete out.unpriced;
+  out.lines = o.lines.map(l => {
+    const { unit_price, pack_price, amount, ...rest } = l;
+    return { ...rest, finishes: l.finishes.map(({ price, ...f }) => f) };
+  });
   if (o.client_view !== 'cronograma') {
     out.phases = []; out.cur = 0;
     delete out.est_max; delete out.est_min; delete out.est_delivery; delete out.est_delivery_min;
@@ -79,7 +113,7 @@ const canSee = (user, o) => user && (user.role === 'admin' || user.client_id ===
 
 /* ---------- catálogo ---------- */
 function catalogOf(clientId) {
-  const finishes = db.prepare('SELECT id,name,asks_value,value_label FROM finishes WHERE client_id=? ORDER BY sort,id').all(clientId);
+  const finishes = db.prepare('SELECT id,name,asks_value,value_label,price FROM finishes WHERE client_id=? ORDER BY sort,id').all(clientId);
   const fById = new Map(finishes.map(f => [f.id, f]));
   const prods = db.prepare('SELECT id,name,sizes,price,photo FROM products WHERE client_id=? ORDER BY sort,id').all(clientId);
   const pf = db.prepare(
@@ -100,7 +134,7 @@ function catalogOf(clientId) {
     items: items.filter(i => i.pack_id === p.id).map(i => pById.get(i.product_id)).filter(Boolean)
   }));
   return {
-    finishes: finishes.map(f => ({ name: f.name, asks_value: !!f.asks_value, value_label: f.value_label || '' })),
+    finishes: finishes.map(f => ({ name: f.name, asks_value: !!f.asks_value, value_label: f.value_label || '', price: f.price })),
     products, packs
   };
 }
@@ -110,8 +144,12 @@ function cleanLines(raw, client, enforce, requireColor) {
   const cat = catalogOf(client.id);
   const prodMap = new Map(), photoMap = new Map();
   const packSet = new Set();
-  cat.products.forEach(p => { prodMap.set(p.name, p.finishes); photoMap.set(p.name, p.photo); });
-  cat.packs.forEach(p => packSet.add(p.name));
+  const priceProd = new Map(), pricePack = new Map(), priceFin = new Map();
+  cat.products.forEach(p => { prodMap.set(p.name, p.finishes); photoMap.set(p.name, p.photo); priceProd.set(p.name, p.price); });
+  cat.packs.forEach(p => { packSet.add(p.name); pricePack.set(p.name, p.price); });
+  cat.finishes.forEach(f => priceFin.set(f.name, f.price));
+  const admin = !enforce;      // solo el administrador puede fijar o cambiar precios; al cliente se le aplican los del catálogo
+  const pick = (obj, key, fallback) => (admin && obj && key in obj) ? money(obj[key]) : (fallback == null ? null : fallback);
   const out = [];
   (Array.isArray(raw) ? raw : []).forEach(l => {
     const kind = ['pack', 'product', 'free'].includes(l.kind) ? l.kind : 'free';
@@ -119,7 +157,7 @@ function cleanLines(raw, client, enforce, requireColor) {
     if (!name) return;
     const qty = Math.min(100000, Math.max(1, parseInt(l.qty, 10) || 1));
     let fins = (Array.isArray(l.finishes) ? l.finishes : [])
-      .map(f => ({ name: clean(f.name, 100), value: clean(f.value), fixed: !!f.fixed })).filter(f => f.name);
+      .map(f => ({ name: clean(f.name, 100), value: clean(f.value), fixed: !!f.fixed, _raw: f })).filter(f => f.name);
     if (enforce) {
       if (kind === 'pack' && !client.allow_packs) throw bad('Este cliente no puede pedir packs');
       if (kind === 'product' && !client.allow_products) throw bad('Este cliente no puede pedir productos sueltos del catálogo');
@@ -134,13 +172,19 @@ function cleanLines(raw, client, enforce, requireColor) {
         fins = [...fixed, ...optional];
       }
     }
+    // precios (instantánea en el momento de guardar)
+    fins = fins.map(f => {
+      return { name: f.name, value: f.value, fixed: f.fixed, price: f.fixed ? null : pick(f._raw, 'price', priceFin.get(f.name)) };
+    });
+    const unit_price = kind === 'pack' ? null : (kind === 'free' ? (admin ? money(l.unit_price) : null) : pick(l, 'unit_price', priceProd.get(name)));
+    const pack_price = kind === 'pack' ? pick(l, 'pack_price', pricePack.get(clean(l.pack_name))) : null;
     const color = clean(l.color, 60);
     if (requireColor && !color) throw bad('Indica el color de «' + name + '»');
     const photo = kind === 'free' ? validPhoto(l.photo) : (photoMap.get(name) || validPhoto(l.photo));
     out.push({
       kind, color, photo, group_no: parseInt(l.group_no, 10) || 0,
       pack_name: kind === 'pack' ? clean(l.pack_name) : null,
-      product_name: name, size: clean(l.size, 40), qty, finishes: fins
+      product_name: name, size: clean(l.size, 40), qty, finishes: fins, unit_price, pack_price
     });
   });
   if (!out.length) throw bad('El pedido no tiene ninguna línea');
@@ -148,11 +192,11 @@ function cleanLines(raw, client, enforce, requireColor) {
 }
 function writeLines(orderId, lines) {
   db.prepare('DELETE FROM order_lines WHERE order_id=?').run(orderId);
-  const insL = db.prepare('INSERT INTO order_lines(order_id,sort,kind,group_no,pack_name,product_name,size,qty,color,photo) VALUES (?,?,?,?,?,?,?,?,?,?)');
-  const insF = db.prepare('INSERT INTO line_finishes(line_id,name,value,fixed) VALUES (?,?,?,?)');
+  const insL = db.prepare('INSERT INTO order_lines(order_id,sort,kind,group_no,pack_name,product_name,size,qty,color,photo,unit_price,pack_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
+  const insF = db.prepare('INSERT INTO line_finishes(line_id,name,value,fixed,price) VALUES (?,?,?,?,?)');
   lines.forEach((l, i) => {
-    const id = insL.run(orderId, i, l.kind, l.group_no, l.pack_name, l.product_name, l.size, l.qty, l.color || '', l.photo || '').lastInsertRowid;
-    l.finishes.forEach(f => insF.run(id, f.name, f.value, f.fixed ? 1 : 0));
+    const id = insL.run(orderId, i, l.kind, l.group_no, l.pack_name, l.product_name, l.size, l.qty, l.color || '', l.photo || '', l.unit_price == null ? null : l.unit_price, l.pack_price == null ? null : l.pack_price).lastInsertRowid;
+    l.finishes.forEach(f => insF.run(id, f.name, f.value, f.fixed ? 1 : 0, f.price == null ? null : f.price));
   });
 }
 function writePhases(orderId, phases) {
@@ -375,24 +419,30 @@ app.post('/api/admins', auth.requireAdmin, (req, res) => {
 app.get('/api/clients/:id/catalog', auth.requireUser, (req, res) => {
   const id = Number(req.params.id);
   if (req.user.role !== 'admin' && req.user.client_id !== id) throw bad('No permitido', 403);
-  res.json(catalogOf(id));
+  const cat = catalogOf(id);
+  if (req.user.role !== 'admin') {
+    cat.finishes.forEach(f => { delete f.price; });
+    cat.products.forEach(p => { delete p.price; });
+    cat.packs.forEach(p => { delete p.price; });
+  }
+  res.json(cat);
 });
 app.put('/api/clients/:id/catalog', auth.requireAdmin, (req, res) => {
   const cid = Number(req.params.id);
   if (!db.prepare('SELECT 1 FROM clients WHERE id=?').get(cid)) throw bad('Cliente no encontrado', 404);
   const b = req.body || {};
   const finishes = (b.finishes || []).map(f => ({
-    name: clean(f.name, 100), asks_value: f.asks_value ? 1 : 0, value_label: clean(f.value_label, 60)
+    name: clean(f.name, 100), asks_value: f.asks_value ? 1 : 0, value_label: clean(f.value_label, 60), price: money(f.price)
   })).filter(f => f.name);
   const products = (b.products || []).map(p => ({
     name: clean(p.name, 150),
     sizes: String(p.sizes || '').split(',').map(s => s.trim()).filter(Boolean).join(','),
-    price: p.price === '' || p.price == null || isNaN(Number(p.price)) ? null : Number(p.price),
+    price: money(p.price),
     photo: validPhoto(p.photo), finishes: p.finishes || {}
   })).filter(p => p.name);
   const packs = (b.packs || []).map(p => ({
     name: clean(p.name, 150),
-    price: p.price === '' || p.price == null || isNaN(Number(p.price)) ? null : Number(p.price),
+    price: money(p.price),
     items: Array.isArray(p.items) ? p.items : []
   })).filter(p => p.name);
   const dup = arr => arr.find((x, i) => arr.findIndex(y => y.name.toLowerCase() === x.name.toLowerCase()) !== i);
@@ -406,8 +456,8 @@ app.put('/api/clients/:id/catalog', auth.requireAdmin, (req, res) => {
     db.prepare('DELETE FROM products WHERE client_id=?').run(cid);
     db.prepare('DELETE FROM finishes WHERE client_id=?').run(cid);
     const fId = new Map(), pId = new Map();
-    const insF = db.prepare('INSERT INTO finishes(client_id,name,asks_value,value_label,sort) VALUES (?,?,?,?,?)');
-    finishes.forEach((f, i) => fId.set(f.name, insF.run(cid, f.name, f.asks_value, f.value_label, i).lastInsertRowid));
+    const insF = db.prepare('INSERT INTO finishes(client_id,name,asks_value,value_label,sort,price) VALUES (?,?,?,?,?,?)');
+    finishes.forEach((f, i) => fId.set(f.name, insF.run(cid, f.name, f.asks_value, f.value_label, i, f.price).lastInsertRowid));
     const insP = db.prepare('INSERT INTO products(client_id,name,sizes,price,sort,photo) VALUES (?,?,?,?,?,?)');
     const insPF = db.prepare('INSERT INTO product_finishes(product_id,finish_id,mode) VALUES (?,?,?)');
     products.forEach((p, i) => {
@@ -684,6 +734,88 @@ app.get('/api/production.csv', auth.requireAdmin, (req, res) => {
   res.setHeader('Content-Disposition', 'attachment; filename="produccion.csv"');
   res.send('﻿' + rows.map(r => r.map(q).join(';')).join('\r\n'));
 });
+
+/* ---------- estadísticas e informes ---------- */
+const CATS = ['Packs', 'Productos', 'Fuera de catálogo'];
+function statsData(q) {
+  const ids = String(q.clients || '').split(',').map(Number).filter(Boolean);
+  const from = isDate(q.from) ? q.from : '', to = isDate(q.to) ? q.to : '';
+  const where = [], params = [];
+  if (ids.length) { where.push('client_id IN (' + ids.map(() => '?').join(',') + ')'); params.push(...ids); }
+  if (from) { where.push('order_date>=?'); params.push(from); }
+  if (to) { where.push('order_date<=?'); params.push(to); }
+  if (q.status === 'active') where.push("status<>'Entregado'");
+  if (q.status === 'delivered') where.push("status='Entregado'");
+  const rows = db.prepare('SELECT id FROM orders' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY order_date,id').all(...params);
+  const orders = rows.map(r => loadOrder(r.id));
+
+  const zero = () => ({ qty: 0, amount: 0 });
+  const add = (t, qty, amount) => { t.qty += qty; t.amount = r2(t.amount + amount); };
+  const monthSet = new Set();
+  const byMonthCat = new Map();     // 'YYYY-MM' -> { cat -> {qty,amount} }
+  const byCat = new Map(CATS.map(c => [c, zero()]));
+  const byClient = new Map();
+  const byProduct = new Map();
+  let units = 0, amount = 0, unpriced = 0;
+  const clientsSeen = new Set();
+
+  orders.forEach(o => {
+    const m = o.order_date.slice(0, 7);
+    monthSet.add(m);
+    clientsSeen.add(o.client_id);
+    unpriced += o.unpriced;
+    const cl = byClient.get(o.client_id) || { id: o.client_id, name: o.client_name, orders: 0, qty: 0, amount: 0, months: {} };
+    cl.orders++; byClient.set(o.client_id, cl);
+    if (!byMonthCat.has(m)) byMonthCat.set(m, new Map(CATS.map(c => [c, zero()])));
+    const mc = byMonthCat.get(m);
+    const packSeen = new Set();
+    o.lines.forEach(l => {
+      const cat = l.kind === 'pack' ? 'Packs' : l.kind === 'free' ? 'Fuera de catálogo' : 'Productos';
+      add(mc.get(cat), l.qty, l.amount); add(byCat.get(cat), l.qty, l.amount);
+      units += l.qty; amount = r2(amount + l.amount);
+      cl.qty += l.qty; cl.amount = r2(cl.amount + l.amount);
+      const cm = cl.months[m] || (cl.months[m] = zero()); add(cm, l.qty, l.amount);
+      // por producto (las prendas de un pack cuentan en unidades; el importe del pack va en su propia fila)
+      const key = (l.kind === 'free' ? 'F|' : 'P|') + l.product_name;
+      const pr = byProduct.get(key) || { name: l.product_name, free: l.kind === 'free', qty: 0, amount: 0, orders: new Set(), sizes: {} };
+      pr.qty += l.qty;
+      pr.amount = r2(pr.amount + (l.kind === 'pack' ? r2(l.qty * l.finishes.reduce((a, f) => a + (f.price || 0), 0)) : l.amount));
+      pr.orders.add(o.id);
+      const sz = l.size || 'Única';
+      pr.sizes[sz] = (pr.sizes[sz] || 0) + l.qty;
+      byProduct.set(key, pr);
+      if (l.kind === 'pack' && !packSeen.has(l.group_no)) {
+        packSeen.add(l.group_no);
+        const pk = 'K|' + l.pack_name;
+        const x = byProduct.get(pk) || { name: l.pack_name, pack: true, qty: 0, amount: 0, orders: new Set(), sizes: {} };
+        x.qty += l.qty; x.amount = r2(x.amount + r2(l.qty * (l.pack_price || 0))); x.orders.add(o.id);
+        byProduct.set(pk, x);
+      }
+    });
+  });
+
+  // meses consecutivos, sin huecos
+  let months = [...monthSet].sort();
+  if (months.length) {
+    const out = []; let [y, mo] = months[0].split('-').map(Number); const [ey, em] = months[months.length - 1].split('-').map(Number);
+    while (y < ey || (y === ey && mo <= em)) { out.push(y + '-' + String(mo).padStart(2, '0')); mo++; if (mo > 12) { mo = 1; y++; } }
+    months = out;
+  }
+  const monthly = months.map(m => {
+    const mc = byMonthCat.get(m);
+    return { month: m, cats: CATS.map(c => ({ cat: c, ...(mc ? mc.get(c) : zero()) })) };
+  });
+  return {
+    categories: CATS,
+    kpis: { orders: orders.length, units, amount, clients: clientsSeen.size, avg_order: orders.length ? r2(amount / orders.length) : 0, unpriced },
+    months, monthly,
+    cats: CATS.map(c => ({ cat: c, ...byCat.get(c) })),
+    clients: [...byClient.values()].sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name)),
+    products: [...byProduct.values()].map(p => ({ ...p, orders: p.orders.size })).sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name)),
+    filter: { clients: ids, from, to, status: q.status || 'all' }
+  };
+}
+app.get('/api/stats', auth.requireAdmin, (req, res) => res.json(statsData(req.query)));
 
 /* ---------- ajustes ---------- */
 app.get('/api/settings', auth.requireAdmin, (req, res) => {
