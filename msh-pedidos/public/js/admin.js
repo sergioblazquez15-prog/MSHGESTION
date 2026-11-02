@@ -60,7 +60,7 @@ A.tableHTML = function () {
   if (!rows.length) return `<div class="empty">${A.orders.length ? 'No hay pedidos con este filtro.' : 'Todavía no hay pedidos. Cuando un cliente envíe uno, aparecerá aquí.'}</div>`;
   return `<table><thead><tr><th>Pedido</th><th>Cliente</th><th>Fecha</th><th>Fase</th><th>Entrega estimada</th><th>Estado</th></tr></thead><tbody>
   ${rows.map(o => `<tr class="${diffDays(o.est_delivery, S.today) <= 7 ? 'urgent' : ''}" style="cursor:pointer" onclick="go('orders/${o.id}')">
-   <td><b>#${o.id}</b> <span class="mini">${o.units} uds</span>${o.origin === 'admin' ? ' <span class="tag adm">MSH</span>' : ''}</td>
+   <td><b>#${o.number}</b>${o.title ? ' · ' + esc(o.title) : ''}<br><span class="mini">${o.units} uds</span>${o.origin === 'admin' ? ' <span class="tag adm">MSH</span>' : ''}</td>
    <td><div class="cc">${shieldHTML(o)}${esc(o.client_name)}</div></td><td>${fmt(o.order_date)}</td>
    <td style="min-width:170px"><div class="mini" style="margin-bottom:5px">${esc(phName(o))}</div>${seg(o)}</td>
    <td>${prioPill(o)}</td><td><span class="st ${stKey(o.status)}">${esc(o.status)}</span></td></tr>`).join('')}</tbody></table>`;
@@ -75,7 +75,7 @@ A.hist = async function () {
 A.histRows = function () {
   const q = A.histQ.trim().toLowerCase();
   return A.delivered.filter(o => (!A.histClient || String(o.client_id) === String(A.histClient)) &&
-    (!q || ('#' + o.id + ' ' + o.client_name + ' ' + o.lines.map(l => l.product_name).join(' ')).toLowerCase().includes(q)))
+    (!q || ('#' + o.number + ' ' + o.title + ' ' + o.client_name + ' ' + o.lines.map(l => l.product_name).join(' ')).toLowerCase().includes(q)))
     .sort((a, b) => (b.delivered_at || '').localeCompare(a.delivered_at || '') || b.id - a.id);
 };
 A.histHTML = function () {
@@ -88,7 +88,7 @@ A.histTable = function () {
   const rows = A.histRows();
   if (!rows.length) return '<div class="empty">No hay pedidos entregados con este filtro.</div>';
   return `<table><thead><tr><th>Pedido</th><th>Cliente</th><th>Fecha</th><th>Entregado</th><th>Documentos</th></tr></thead><tbody>
-  ${rows.map(o => `<tr style="cursor:pointer" onclick="go('orders/${o.id}')"><td><b>#${o.id}</b> <span class="mini">${o.units} uds</span></td>
+  ${rows.map(o => `<tr style="cursor:pointer" onclick="go('orders/${o.id}')"><td><b>#${o.number}</b>${o.title ? ' · ' + esc(o.title) : ''} <span class="mini">${o.units} uds</span></td>
    <td><div class="cc">${shieldHTML(o)}${esc(o.client_name)}</div></td><td>${fmt(o.order_date)}</td><td>${fmt(o.delivered_at)}</td>
    <td>${['albaran', 'factura'].map(k => `<span class="pdf ${o.docs.some(d => d.kind === k) ? 'ok' : ''}">${k === 'albaran' ? 'Albarán' : 'Factura'}</span>`).join(' ')}</td></tr>`).join('')}</tbody></table>`;
 };
@@ -103,14 +103,15 @@ A.detailHTML = function (o) {
   const fin = o.status === 'Entregado';
   return `<span class="crumb" onclick="go('${fin ? 'hist' : 'orders'}')">← ${fin ? 'Histórico' : 'Pedidos'}</span>
   <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:18px"><div class="row" style="gap:16px">${crestHTML({ name: o.client_name, crest: o.client_crest, color: o.client_color }, true)}
-   <div><h1>Pedido #${o.id}</h1><div class="sub" style="margin:6px 0 0">${esc(o.client_name)} · ${fmt(o.order_date)}${o.channel ? ' · ' + esc(o.channel) : ''}${o.origin === 'admin' ? ' · introducido por MSH' : ' · enviado por el cliente'}</div></div></div>
+   <div><h1>${esc(ordTitle(o))}</h1><div class="sub" style="margin:6px 0 0">${esc(o.client_name)} · ${fmt(o.order_date)}${o.channel ? ' · ' + esc(o.channel) : ''}${o.origin === 'admin' ? ' · introducido por MSH' : ' · enviado por el cliente'}</div></div></div>
    <span class="st ${stKey(o.status)}" style="font-size:14px">${esc(o.status)}</span></div>
-  <div class="panel"><div class="ph"><h2>Seguimiento</h2><span class="btnrow">
+  <div class="panel"><div class="ph"><h2>Seguimiento</h2><span class="btnrow"><a class="btn ghost sm" style="text-decoration:none" target="_blank" href="/print.html?id=${o.id}">Exportar PDF</a>
    <button class="btn ghost sm" onclick="A.adv(-1)" ${o.status === 'Recibido' && !o.cur ? 'disabled style="opacity:.4"' : ''}>← Fase anterior</button>
    <button class="btn amber sm" onclick="A.adv(1)" ${fin ? 'disabled style="opacity:.4"' : ''}>Avanzar fase →</button></span></div>
    <div class="pb">${gantt(o)}
    <div class="row" style="margin-top:16px"><span class="mini">Cambiar estado:</span>${STATUSES.map(s => `<button class="chip ${o.status === s ? 'on' : ''}" onclick="A.setStatus('${s}')">${s}</button>`).join('')}</div>
-   <p class="hint" style="margin-bottom:0">Cada cambio avisa por correo al cliente.</p></div></div>
+   <p class="hint" style="margin-bottom:0">Cada cambio avisa por correo al cliente.</p>
+   <div class="row" style="margin-top:14px"><span class="mini">El cliente ve:</span><button class="chip ${o.client_view === 'estado' ? 'on' : ''}" onclick="A.setView('estado')">Solo el estado</button><button class="chip ${o.client_view === 'cronograma' ? 'on' : ''}" onclick="A.setView('cronograma')">El cronograma completo</button></div></div></div>
   <div class="grid2"><div>
    <div class="panel"><div class="ph"><h2>Artículos · ${o.units} uds</h2><span class="btnrow"><button class="btn ghost sm" onclick="go('edit/${o.id}')">Editar pedido</button></span></div><div class="pb">${linesHTML(o)}${o.notes ? `<p class="hint"><b>Notas:</b> ${esc(o.notes)}</p>` : ''}</div></div>
    <div class="panel"><div class="ph"><h2>Albarán y factura</h2></div><div class="pb">${A.docsHTML(o)}</div></div></div>
@@ -122,17 +123,18 @@ A.detailHTML = function (o) {
    <button class="btn ghost" onclick="A.resetPhases()">Restaurar la plantilla general</button></div></div></div>`;
 };
 A.docsHTML = function (o) {
-  const row = (k, label) => {
+  const row = (k, label, accept) => {
     const ds = o.docs.filter(d => d.kind === k);
     return `<div class="box"><h4>${label}</h4>${ds.map(d => `<div class="sumrow" style="padding:6px 0"><a href="/api/docs/${d.id}" style="color:var(--ink)">${esc(d.filename)}</a><button class="x" onclick="A.delDoc(${d.id})">Quitar</button></div>`).join('') || '<div class="mini" style="margin-bottom:8px">Sin subir</div>'}
-    <input type="file" accept="application/pdf" id="file-${k}" onchange="A.upload('${k}')"></div>`;
+    <input type="file" accept="${accept || 'application/pdf'}" id="file-${k}" onchange="A.upload('${k}')"></div>`;
   };
-  return `<p class="hint" style="margin-top:0">Súbelos en PDF desde FactuSOL. El cliente los descarga desde su panel.</p>${row('albaran', 'Albarán')}${row('factura', 'Factura')}`;
+  return `<p class="hint" style="margin-top:0">El pedido inicial es solo para ti (foto, PDF o Excel) y el cliente no lo ve. El albarán y la factura van en PDF desde FactuSOL y el cliente los descarga desde su panel.</p>${row('pedido', 'Pedido inicial del cliente (para cotejar)', 'image/*,.pdf,.xls,.xlsx,.csv')}${row('albaran', 'Albarán')}${row('factura', 'Factura')}`;
 };
 A.reload = function () { route(); };
+A.setView = async (v) => safe(async () => { await api('POST', `/api/orders/${A.o.id}/view`, { client_view: v }); toast(v === 'estado' ? 'El cliente verá solo el estado' : 'El cliente verá el cronograma completo'); A.reload(); });
 A.adv = async (dir) => safe(async () => { await api('POST', `/api/orders/${A.o.id}/advance`, { dir }); toast('Actualizado'); A.reload(); });
 A.setStatus = async (st) => safe(async () => { await api('POST', `/api/orders/${A.o.id}/status`, { status: st }); toast('Estado: ' + st); A.reload(); });
-A.delOrder = async () => { if (!confirm('¿Borrar el pedido #' + A.o.id + ' para siempre?')) return; await safe(async () => { await api('DELETE', '/api/orders/' + A.o.id); toast('Pedido borrado'); go('orders'); }); };
+A.delOrder = async () => { if (!confirm('¿Borrar el ' + ordTitle(A.o) + ' para siempre?')) return; await safe(async () => { await api('DELETE', '/api/orders/' + A.o.id); toast('Pedido borrado'); go('orders'); }); };
 A.savePhases = async () => safe(async () => {
   const phases = PE.collect();
   await api('PUT', `/api/orders/${A.o.id}/phases`, { phases, order_date: $('ph-date').value });
@@ -165,20 +167,31 @@ A.newOrder = async function (clientId) {
   A.nc = clientId ? +clientId : (A.nc && act.some(c => c.id === A.nc) ? A.nc : act[0].id);
   A.cat = await api('GET', `/api/clients/${A.nc}/catalog`);
   OF.init({ cat: A.cat, admin: true, client: A.clients.find(c => c.id === A.nc) });
+  let nn = ''; try { nn = (await api('GET', '/api/next-number')).number; } catch (e) { nn = ''; }
   return {
     html: `<h1>Nuevo pedido</h1><p class="sub">Introduce un pedido en nombre de un cliente, por ejemplo uno que llegó por correo o por teléfono.</p>
     <div class="panel"><div class="pb"><div class="grid2" style="gap:16px"><div class="field"><label>Cliente</label>${sel('n-client', clientOpts(false), A.nc, 'onchange="go(\'new/\'+this.value)"')}</div>
      <div class="field"><label>Fecha del pedido</label><input type="date" id="n-date" value="${S.today}"></div>
      <div class="field"><label>Cómo llegó</label>${sel('n-chan', ['Correo', 'Teléfono', 'WhatsApp', 'En persona', 'Otro'].map(x => [x, x]), 'Correo')}</div>
-     <div class="field"><label>Notas (opcional)</label><input type="text" id="n-notes"></div></div></div></div>
+     <div class="field"><label>Nº de pedido</label><input type="number" min="1" id="n-num" placeholder="Automático: ${nn}"></div>
+     <div class="field"><label>Título o detalle (opcional)</label><input type="text" id="n-title" placeholder="Ej. Tallaje Encinas"></div>
+     <div class="field"><label>El cliente podrá ver</label>${sel('n-view', [['estado', 'Solo el estado del pedido'], ['cronograma', 'El cronograma completo']], 'estado')}</div>
+     <div class="field"><label>Notas (opcional)</label><input type="text" id="n-notes"></div></div>
+     <div class="field"><label>Pedido inicial del cliente, para cotejar (foto, PDF o Excel; el cliente no lo ve)</label><input type="file" id="n-files" multiple accept="image/*,.pdf,.xls,.xlsx,.csv"></div></div></div>
     ${OF.html()}
     <div class="sendbar sticky"><div><p>Total</p><strong><span id="of-count">0</span> artículos</strong></div><button class="btn amber" onclick="A.sendNew()">Crear pedido</button></div>`
   };
 };
 A.sendNew = async () => safe(async () => {
   const lines = OF.collect();
-  const o = await api('POST', '/api/orders', { client_id: A.nc, order_date: $('n-date').value, channel: $('n-chan').value, notes: $('n-notes').value, lines });
-  toast('Pedido #' + o.id + ' creado'); go('orders/' + o.id);
+  const o = await api('POST', '/api/orders', { client_id: A.nc, order_date: $('n-date').value, channel: $('n-chan').value, notes: $('n-notes').value, number: $('n-num').value, title: $('n-title').value, client_view: $('n-view').value, lines });
+  const files = [...$('n-files').files];
+  let failed = 0;
+  for (const f of files) {
+    try { const fd = new FormData(); fd.append('kind', 'pedido'); fd.append('file', f); await api('POST', `/api/orders/${o.id}/docs`, fd); } catch (e) { failed++; }
+  }
+  toast(ordTitle(o) + ' creado' + (failed ? '. ' + failed + ' archivo(s) no se pudieron subir; súbelos desde el pedido.' : ''), !!failed);
+  go('orders/' + o.id);
 });
 A.editOrder = async function (id) {
   const o = await api('GET', '/api/orders/' + id);
@@ -186,9 +199,12 @@ A.editOrder = async function (id) {
   const cat = await api('GET', `/api/clients/${o.client_id}/catalog`);
   OF.init({ cat, admin: true, client: { allow_packs: 1, allow_products: 1, allow_free: 1 }, order: o });
   return {
-    html: `<span class="crumb" onclick="go('orders/${o.id}')">← Pedido #${o.id}</span><h1>Editar pedido #${o.id}</h1><p class="sub">${esc(o.client_name)}. Los cambios no avisan al cliente.</p>
-    <div class="panel"><div class="pb"><div class="grid2" style="gap:16px"><div class="field"><label>Fecha del pedido</label><input type="date" id="e-date" value="${o.order_date}"></div>
-     <div class="field"><label>Cómo llegó</label><input type="text" id="e-chan" value="${esc(o.channel || '')}"></div></div>
+    html: `<span class="crumb" onclick="go('orders/${o.id}')">← ${esc(ordTitle(o))}</span><h1>Editar pedido</h1><p class="sub">${esc(o.client_name)}. Los cambios no avisan al cliente.</p>
+    <div class="panel"><div class="pb"><div class="grid2" style="gap:16px"><div class="field"><label>Nº de pedido</label><input type="number" min="1" id="e-num" value="${o.number}"></div>
+     <div class="field"><label>Título o detalle</label><input type="text" id="e-title" value="${esc(o.title || '')}" placeholder="Ej. Tallaje Encinas"></div>
+     <div class="field"><label>Fecha del pedido</label><input type="date" id="e-date" value="${o.order_date}"></div>
+     <div class="field"><label>Cómo llegó</label><input type="text" id="e-chan" value="${esc(o.channel || '')}"></div>
+     <div class="field"><label>El cliente podrá ver</label>${sel('e-view', [['estado', 'Solo el estado del pedido'], ['cronograma', 'El cronograma completo']], o.client_view)}</div></div>
      <div class="field"><label>Notas</label><textarea id="e-notes">${esc(o.notes || '')}</textarea></div></div></div>
     ${OF.html()}
     <div class="sendbar sticky"><div><p>Total</p><strong><span id="of-count">${OF.count()}</span> artículos</strong></div><button class="btn amber" onclick="A.saveEdit()">Guardar cambios</button></div>`
@@ -196,19 +212,51 @@ A.editOrder = async function (id) {
 };
 A.saveEdit = async () => safe(async () => {
   const lines = OF.collect();
-  await api('PUT', '/api/orders/' + A.o.id, { order_date: $('e-date').value, channel: $('e-chan').value, notes: $('e-notes').value, lines });
+  await api('PUT', '/api/orders/' + A.o.id, { number: $('e-num').value, title: $('e-title').value, client_view: $('e-view').value, order_date: $('e-date').value, channel: $('e-chan').value, notes: $('e-notes').value, lines });
   toast('Pedido guardado'); go('orders/' + A.o.id);
 });
 
 /* ---------- clientes ---------- */
+A.cSort = (() => { try { return localStorage.getItem('msh_csort') || 'manual'; } catch (e) { return 'manual'; } })();
+A.sortedClients = function () {
+  const a = A.clients.slice(), byName = (x, y) => x.name.localeCompare(y.name, 'es', { sensitivity: 'base' });
+  const byDate = (x, y) => String(x.created_at).localeCompare(String(y.created_at)) || x.id - y.id;
+  switch (A.cSort) {
+    case 'az': return a.sort(byName);
+    case 'za': return a.sort((x, y) => byName(y, x));
+    case 'old': return a.sort(byDate);
+    case 'new': return a.sort((x, y) => byDate(y, x));
+    case 'active': return [...a.filter(c => c.active_orders > 0), ...a.filter(c => !(c.active_orders > 0))];
+    default: return a;
+  }
+};
+A.clientCards = function () {
+  const list = A.sortedClients(), manual = A.cSort === 'manual';
+  if (!list.length) return '<div class="empty panel">Aún no hay clientes. Crea el primero con el botón de arriba.</div>';
+  return `<div class="cardgrid">${list.map((c, i) => `<div class="ccard" onclick="go('client/${c.id}')"><div class="row" style="gap:14px">${crestHTML(c, true)}<div><div style="font-family:var(--serif);font-size:21px">${esc(c.name)}</div>
+    <div class="mini">${c.active ? '' : '<span class="pill-off">Desactivado · </span>'}${c.users_n} ${c.users_n === 1 ? 'usuario' : 'usuarios'} · ${c.active_orders} ${c.active_orders === 1 ? 'pedido activo' : 'pedidos activos'}</div></div></div>
+    <div class="row">${c.can_order ? '' : '<span class="tag">Solo consulta</span>'}${c.can_order && c.allow_packs ? '<span class="tag">Packs</span>' : ''}${c.can_order && c.allow_products ? '<span class="tag">Productos</span>' : ''}${c.can_order && c.allow_free ? '<span class="tag">Línea libre</span>' : ''}</div>
+    ${manual ? `<div class="arrows"><button class="x" ${i === 0 ? 'disabled style="opacity:.35"' : ''} onclick="event.stopPropagation();A.moveClient(${c.id},-1)" aria-label="Subir">◀ Antes</button><button class="x" ${i === list.length - 1 ? 'disabled style="opacity:.35"' : ''} onclick="event.stopPropagation();A.moveClient(${c.id},1)" aria-label="Bajar">Después ▶</button></div>` : ''}</div>`).join('')}</div>`;
+};
+A.setCSort = function (v) {
+  A.cSort = v;
+  try { localStorage.setItem('msh_csort', v); } catch (e) { /* no pasa nada */ }
+  $('cl-cards').innerHTML = A.clientCards();
+};
+A.moveClient = async (id, d) => safe(async () => {
+  const a = A.clients, i = a.findIndex(c => c.id === id), j = i + d;
+  if (i < 0 || j < 0 || j >= a.length) return;
+  [a[i], a[j]] = [a[j], a[i]];
+  $('cl-cards').innerHTML = A.clientCards();
+  await api('PUT', '/api/client-order', { ids: a.map(c => c.id) });
+});
 A.clientList = async function () {
   await loadClients();
-  const cards = A.clients.map(c => `<div class="ccard" onclick="go('client/${c.id}')"><div class="row" style="gap:14px">${crestHTML(c, true)}<div><div style="font-family:var(--serif);font-size:21px">${esc(c.name)}</div>
-    <div class="mini">${c.active ? '' : '<span class="pill-off">Desactivado · </span>'}${c.users_n} usuarios · ${c.active_orders} pedidos activos</div></div></div>
-    <div class="row">${c.allow_packs ? '<span class="tag">Packs</span>' : ''}${c.allow_products ? '<span class="tag">Productos</span>' : ''}${c.allow_free ? '<span class="tag">Línea libre</span>' : ''}</div></div>`).join('');
+  const opts = [['manual', 'Mi orden (con flechas)'], ['az', 'Alfabético A → Z'], ['za', 'Alfabético Z → A'], ['old', 'Más antiguos primero'], ['new', 'Más recientes primero'], ['active', 'Con pedidos activos primero']];
   return `<h1>Clientes</h1><p class="sub">Cada cliente tiene su propio portal, su escudo, su catálogo y sus usuarios.</p>
-  <div class="toolbar"><button class="btn amber" onclick="A.newClient()">+ Nuevo cliente</button></div>
-  ${cards ? `<div class="cardgrid">${cards}</div>` : '<div class="empty panel">Aún no hay clientes. Crea el primero con el botón de arriba.</div>'}`;
+  <div class="toolbar"><button class="btn amber" onclick="A.newClient()">+ Nuevo cliente</button>
+   <span class="grow row"><span class="mini">Ordenar</span>${sel('cl-sort', opts, A.cSort, 'onchange="A.setCSort(this.value)"')}</span></div>
+  <div id="cl-cards">${A.clientCards()}</div>`;
 };
 A.newClient = async () => {
   const name = prompt('Nombre del cliente (por ejemplo, el club):');
@@ -228,7 +276,9 @@ A.clientEdit = async function (id) {
     <div class="field"><label>Nombre</label><input type="text" id="c-name" value="${esc(c.name)}"></div>
     <div class="field"><label>Color del escudo (si no hay imagen)</label><input type="color" id="c-color" value="${esc(c.color)}" style="width:60px;height:36px;padding:2px;border-radius:10px;background:var(--bg3);border:1px solid var(--line2)"></div>
     <div class="field"><label>Escudo o logotipo (PNG, JPG o WEBP, máx. 2 MB)</label><input type="file" id="c-crest" accept="image/png,image/jpeg,image/webp" onchange="A.crest()"></div>
-    <div class="field"><label>Qué puede pedir este cliente</label>
+    <div class="field"><label class="cfgbox"><input type="checkbox" id="c-order" ${c.can_order ? 'checked' : ''}> Puede hacer pedidos desde su portal</label>
+     <p class="hint" style="margin:6px 0 0">Si lo desmarcas, el cliente solo entra a ver sus pedidos. Lo que ve de cada uno (solo el estado o el cronograma completo) lo eliges en el propio pedido.</p></div>
+    <div class="field"><label>Si puede pedir, qué puede pedir</label>
      <label class="cfgbox"><input type="checkbox" id="c-packs" ${c.allow_packs ? 'checked' : ''}> Packs del catálogo</label>
      <label class="cfgbox" style="margin-top:6px"><input type="checkbox" id="c-prods" ${c.allow_products ? 'checked' : ''}> Productos sueltos del catálogo</label>
      <label class="cfgbox" style="margin-top:6px"><input type="checkbox" id="c-free" ${c.allow_free ? 'checked' : ''}> Líneas libres (fuera de catálogo)</label></div>
@@ -245,7 +295,7 @@ A.clientEdit = async function (id) {
    <button class="btn amber" onclick="A.addUser()">Crear usuario</button></div></div></div>`;
 };
 A.saveClient = async () => safe(async () => {
-  await api('PUT', '/api/clients/' + A.c.id, { name: $('c-name').value, color: $('c-color').value, allow_packs: $('c-packs').checked, allow_products: $('c-prods').checked, allow_free: $('c-free').checked, active: $('c-active').checked });
+  await api('PUT', '/api/clients/' + A.c.id, { name: $('c-name').value, color: $('c-color').value, allow_packs: $('c-packs').checked, allow_products: $('c-prods').checked, allow_free: $('c-free').checked, can_order: $('c-order').checked, active: $('c-active').checked });
   toast('Cliente guardado'); A.reload();
 });
 A.crest = async () => {
@@ -271,7 +321,7 @@ A.catalog = async function (clientId) {
   const cat = await api('GET', `/api/clients/${A.catClient}/catalog`);
   // Estado editable con ids locales estables
   const fin = cat.finishes.map(f => ({ id: kid(), name: f.name, asks_value: f.asks_value, value_label: f.value_label }));
-  const prod = cat.products.map(p => ({ id: kid(), name: p.name, sizes: p.sizes, price: p.price == null ? '' : p.price, finishes: { ...p.finishes } }));
+  const prod = cat.products.map(p => ({ id: kid(), name: p.name, photo: p.photo || '', sizes: p.sizes, price: p.price == null ? '' : p.price, finishes: { ...p.finishes } }));
   const pack = cat.packs.map(p => ({ id: kid(), name: p.name, price: p.price == null ? '' : p.price, items: p.items.map(n => (prod.find(x => x.name === n) || {}).id).filter(Boolean) }));
   A.K = { fin, prod, pack, dirty: false };
   return { html: `<h1>Catálogo</h1><p class="sub">Lo que cada cliente puede pedir: acabados, productos y packs. Solo lo edita MSH.</p>
@@ -294,6 +344,7 @@ A.catHTML = function () {
    ${K.prod.map((p, i) => `<div class="box"><div class="row" style="margin-bottom:10px"><input type="text" style="min-width:210px;flex:1" placeholder="Nombre del producto" value="${esc(p.name)}" oninput="A.K.prod[${i}].name=this.value;A.dirty()" onchange="A.catRefresh()">
      <input type="text" style="width:220px" placeholder="Tallas: S,M,L,XL" value="${esc(p.sizes)}" oninput="A.K.prod[${i}].sizes=this.value;A.dirty()">
      <input type="number" step="0.01" min="0" style="width:96px" placeholder="Precio €" value="${esc(p.price)}" oninput="A.K.prod[${i}].price=this.value;A.dirty()"><button class="x" onclick="A.rm('prod',${i})">✕</button></div>
+     <div class="freephoto" style="margin-bottom:12px">${thumb(p.photo, true)}<label class="btn ghost sm" for="pp-${i}">${p.photo ? 'Cambiar foto' : '📷 Añadir foto del producto'}</label><input type="file" id="pp-${i}" accept="image/*" hidden onchange="A.prodPhoto(${i},this)">${p.photo ? `<button class="x" onclick="A.K.prod[${i}].photo='';A.dirty();A.catRefresh()">Quitar foto</button>` : ''}</div>
      <div class="matrix">${names.map(f => `<label>${esc(f.name)}<select class="${p.finishes[f.name] === 'fixed' ? 'fix' : p.finishes[f.name] === 'optional' ? 'cfg' : ''}" onchange="A.setMode(${i},'${f.id}',this.value,this)">
        ${[['', 'No'], ['fixed', 'Fijo'], ['optional', 'Opcional']].map(m => `<option value="${m[0]}" ${(p.finishes[f.name] || '') === m[0] ? 'selected' : ''}>${m[1]}</option>`).join('')}</select></label>`).join('') || '<span class="mini">Añade acabados arriba para configurarlos aquí.</span>'}</div></div>`).join('')}
    <button class="btn ghost sm" onclick="A.addProd()">+ Añadir producto</button></div></div>`;
@@ -313,8 +364,12 @@ A.renFin = (i, v) => {
   A.dirty();
 };
 A.addFin = () => { A.K.fin.push({ id: kid(), name: '', asks_value: false, value_label: '' }); A.dirty(); A.catRefresh(); };
-A.addProd = () => { A.K.prod.push({ id: kid(), name: '', sizes: '', price: '', finishes: {} }); A.dirty(); A.catRefresh(); };
+A.addProd = () => { A.K.prod.push({ id: kid(), name: '', photo: '', sizes: '', price: '', finishes: {} }); A.dirty(); A.catRefresh(); };
 A.addPack = () => { A.K.pack.push({ id: kid(), name: '', price: '', items: [] }); A.dirty(); A.catRefresh(); };
+A.prodPhoto = async (i, input) => {
+  const f = input.files[0]; if (!f) return;
+  await safe(async () => { toast('Subiendo foto…'); A.K.prod[i].photo = await uploadPhoto(f); A.dirty(); A.catRefresh(); toast('Foto añadida. Pulsa «Guardar catálogo».'); });
+};
 A.rm = (k, i) => { A.K[k].splice(i, 1); A.dirty(); A.catRefresh(); };
 A.setMode = (pi, fid, mode, el) => {
   const f = A.K.fin.find(x => String(x.id) === String(fid));
@@ -331,7 +386,7 @@ A.saveCat = async () => safe(async () => {
   const K = A.K, byId = new Map(K.prod.map(p => [p.id, p.name.trim()]));
   const body = {
     finishes: K.fin.map(f => ({ name: f.name.trim(), asks_value: f.asks_value, value_label: f.value_label })),
-    products: K.prod.map(p => ({ name: p.name.trim(), sizes: p.sizes, price: p.price, finishes: p.finishes })),
+    products: K.prod.map(p => ({ name: p.name.trim(), photo: p.photo, sizes: p.sizes, price: p.price, finishes: p.finishes })),
     packs: K.pack.map(p => ({ name: p.name.trim(), price: p.price, items: p.items.map(id => byId.get(id)).filter(Boolean) }))
   };
   await api('PUT', `/api/clients/${A.catClient}/catalog`, body);
@@ -376,10 +431,10 @@ A.prodDraw = function () {
       <div class="chips" style="margin-bottom:${f.values.length ? 12 : 0}px">${f.by_product.map(p => `<span class="fin">${esc(p.product)} × ${p.qty}</span>`).join('')}</div>
       ${f.values.length ? `<table style="min-width:0"><thead><tr><th style="padding-left:0">Dato</th><th>Producto</th><th>Talla</th><th>Uds</th><th>Pedido</th></tr></thead><tbody>${f.values.map(v => `<tr><td style="padding-left:0"><b>${esc(v.value)}</b></td><td>${esc(v.product)}</td><td>${esc(v.size) || '—'}</td><td>${v.qty}</td><td>#${v.order_id}</td></tr>`).join('')}</tbody></table>` : ''}</div></div>`).join('') : A.pEmpty();
   } else if (A.pq.tab === 'ord') {
-    h = d.orders.length ? d.orders.map(o => `<div class="panel"><div class="ph"><h2>Pedido #${o.id} · ${esc(o.client_name)}</h2><span class="mini">${fmt(o.order_date)} · entrega ${fmt(o.est_delivery)}</span></div><div class="pb">${linesHTML(o)}</div></div>`).join('') : A.pEmpty();
+    h = d.orders.length ? d.orders.map(o => `<div class="panel"><div class="ph"><h2>${esc(ordTitle(o))} · ${esc(o.client_name)}</h2><span class="mini">${fmt(o.order_date)} · entrega ${fmt(o.est_delivery)}</span></div><div class="pb">${linesHTML(o)}</div></div>`).join('') : A.pEmpty();
   } else {
     const ids = A.pq.sel;
-    h = `<div class="panel"><div class="ph"><h2>Elige los pedidos</h2></div><div class="pb"><div class="chips">${A.pbase.orders.map(o => `<label class="chip ${ids.includes(o.id) ? 'on' : ''}" style="cursor:pointer"><input type="checkbox" hidden ${ids.includes(o.id) ? 'checked' : ''} onchange="A.pickOrder(${o.id},this.checked)">#${o.id} · ${esc(o.client_name)}</label>`).join('') || '<span class="mini">No hay pedidos.</span>'}</div></div></div>`;
+    h = `<div class="panel"><div class="ph"><h2>Elige los pedidos</h2></div><div class="pb"><div class="chips">${A.pbase.orders.map(o => `<label class="chip ${ids.includes(o.id) ? 'on' : ''}" style="cursor:pointer"><input type="checkbox" hidden ${ids.includes(o.id) ? 'checked' : ''} onchange="A.pickOrder(${o.id},this.checked)">#${o.number}${o.title ? ' ' + esc(o.title) : ''} · ${esc(o.client_name)}</label>`).join('') || '<span class="mini">No hay pedidos.</span>'}</div></div></div>`;
     if (ids.length) {
       h += `<h3 style="font-family:var(--serif);font-weight:400;font-size:24px;margin:24px 0 12px">Resumen de ${ids.length} pedidos</h3>
       <div class="panel"><table><thead><tr><th>Artículo</th><th>Talla</th><th>Unidades</th></tr></thead><tbody>${d.articles.map(a => `<tr><td>${esc(a.article)}</td><td>${esc(a.size) || '—'}</td><td><b>${a.qty}</b></td></tr>`).join('')}</tbody></table></div>

@@ -27,6 +27,17 @@ const slugify = s =>
     .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'cliente';
 const clean = (s, n = 200) => String(s == null ? '' : s).trim().slice(0, n);
 const isHex = c => /^#[0-9a-fA-F]{6}$/.test(String(c || ''));
+const PHOTO_RE = /^[a-f0-9]{28}\.(png|jpe?g|webp)$/;
+const validPhoto = f => (PHOTO_RE.test(String(f || '')) && fs.existsSync(path.join(DATA, 'photos', String(f)))) ? String(f) : '';
+const orderRef = o => 'pedido ' + o.number + (o.title ? ' - ' + o.title : '');
+const nextNumber = () => (db.prepare('SELECT MAX(number) AS m FROM orders').get().m || 0) + 1;
+function pickNumber(raw, selfId) {
+  if (raw === '' || raw == null) return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 999999) throw bad('El número de pedido debe ser un entero mayor que 0');
+  if (db.prepare('SELECT 1 FROM orders WHERE number=? AND id<>?').get(n, selfId || 0)) throw bad('Ya existe el pedido nº ' + n + '. Elige otro número.');
+  return n;
+}
 const logStatus = (orderId, what, user) =>
   db.prepare('INSERT INTO status_log(order_id,what,by_user) VALUES (?,?,?)').run(orderId, what, user ? (user.name || user.email) : 'sistema');
 
@@ -55,20 +66,29 @@ function loadOrder(id) {
   o.units = o.lines.reduce((a, l) => a + l.qty, 0);
   return o;
 }
+function present(user, o) {
+  if (!user || user.role !== 'client') return o;
+  const out = { ...o, docs: o.docs.filter(d => d.kind !== 'pedido'), log: [] };
+  if (o.client_view !== 'cronograma') {
+    out.phases = []; out.cur = 0;
+    delete out.est_max; delete out.est_min; delete out.est_delivery; delete out.est_delivery_min;
+  }
+  return out;
+}
 const canSee = (user, o) => user && (user.role === 'admin' || user.client_id === o.client_id);
 
 /* ---------- catálogo ---------- */
 function catalogOf(clientId) {
   const finishes = db.prepare('SELECT id,name,asks_value,value_label FROM finishes WHERE client_id=? ORDER BY sort,id').all(clientId);
   const fById = new Map(finishes.map(f => [f.id, f]));
-  const prods = db.prepare('SELECT id,name,sizes,price FROM products WHERE client_id=? ORDER BY sort,id').all(clientId);
+  const prods = db.prepare('SELECT id,name,sizes,price,photo FROM products WHERE client_id=? ORDER BY sort,id').all(clientId);
   const pf = db.prepare(
     'SELECT product_id,finish_id,mode FROM product_finishes WHERE product_id IN (SELECT id FROM products WHERE client_id=?)'
   ).all(clientId);
   const products = prods.map(p => {
     const fm = {};
     pf.filter(x => x.product_id === p.id).forEach(x => { const f = fById.get(x.finish_id); if (f) fm[f.name] = x.mode; });
-    return { name: p.name, sizes: p.sizes, price: p.price, finishes: fm };
+    return { name: p.name, sizes: p.sizes, price: p.price, photo: p.photo || '', finishes: fm };
   });
   const pById = new Map(prods.map(p => [p.id, p.name]));
   const packRows = db.prepare('SELECT id,name,price FROM packs WHERE client_id=? ORDER BY sort,id').all(clientId);
@@ -86,14 +106,12 @@ function catalogOf(clientId) {
 }
 
 /* ---------- líneas de pedido ---------- */
-function cleanLines(raw, client, enforce) {
-  const cat = enforce ? catalogOf(client.id) : null;
-  const prodMap = new Map();
+function cleanLines(raw, client, enforce, requireColor) {
+  const cat = catalogOf(client.id);
+  const prodMap = new Map(), photoMap = new Map();
   const packSet = new Set();
-  if (cat) {
-    cat.products.forEach(p => prodMap.set(p.name, p.finishes));
-    cat.packs.forEach(p => packSet.add(p.name));
-  }
+  cat.products.forEach(p => { prodMap.set(p.name, p.finishes); photoMap.set(p.name, p.photo); });
+  cat.packs.forEach(p => packSet.add(p.name));
   const out = [];
   (Array.isArray(raw) ? raw : []).forEach(l => {
     const kind = ['pack', 'product', 'free'].includes(l.kind) ? l.kind : 'free';
@@ -116,8 +134,11 @@ function cleanLines(raw, client, enforce) {
         fins = [...fixed, ...optional];
       }
     }
+    const color = kind === 'free' ? clean(l.color, 60) : '';
+    if (kind === 'free' && requireColor && !color) throw bad('Indica el color de «' + name + '»');
+    const photo = kind === 'free' ? validPhoto(l.photo) : (photoMap.get(name) || validPhoto(l.photo));
     out.push({
-      kind, group_no: parseInt(l.group_no, 10) || 0,
+      kind, color, photo, group_no: parseInt(l.group_no, 10) || 0,
       pack_name: kind === 'pack' ? clean(l.pack_name) : null,
       product_name: name, size: clean(l.size, 40), qty, finishes: fins
     });
@@ -127,10 +148,10 @@ function cleanLines(raw, client, enforce) {
 }
 function writeLines(orderId, lines) {
   db.prepare('DELETE FROM order_lines WHERE order_id=?').run(orderId);
-  const insL = db.prepare('INSERT INTO order_lines(order_id,sort,kind,group_no,pack_name,product_name,size,qty) VALUES (?,?,?,?,?,?,?,?)');
+  const insL = db.prepare('INSERT INTO order_lines(order_id,sort,kind,group_no,pack_name,product_name,size,qty,color,photo) VALUES (?,?,?,?,?,?,?,?,?,?)');
   const insF = db.prepare('INSERT INTO line_finishes(line_id,name,value,fixed) VALUES (?,?,?,?)');
   lines.forEach((l, i) => {
-    const id = insL.run(orderId, i, l.kind, l.group_no, l.pack_name, l.product_name, l.size, l.qty).lastInsertRowid;
+    const id = insL.run(orderId, i, l.kind, l.group_no, l.pack_name, l.product_name, l.size, l.qty, l.color || '', l.photo || '').lastInsertRowid;
     l.finishes.forEach(f => insF.run(id, f.name, f.value, f.fixed ? 1 : 0));
   });
 }
@@ -154,29 +175,33 @@ function curPhase(o) {
   return en[Math.max(0, Math.min(o.cur, en.length - 1))] || null;
 }
 async function mailProgress(o) {
-  const ph = curPhase(o);
+  const ph = o.client_view === 'cronograma' ? curPhase(o) : null;   // si solo ve el estado, no se le cuentan las fases
+  const ref = orderRef(o);
   let title, subject;
   if (o.status === 'Entregado') {
-    title = 'Tu pedido #' + o.id + ' ha sido entregado';
-    subject = 'Pedido #' + o.id + ' entregado';
+    title = 'Tu ' + ref + ' ha sido entregado';
+    subject = 'Pedido ' + o.number + ' entregado';
   } else if (o.status === 'Listo para recoger') {
-    title = 'Tu pedido #' + o.id + ' está listo para recoger';
-    subject = 'Pedido #' + o.id + ' listo para recoger';
+    title = 'Tu ' + ref + ' está listo para recoger';
+    subject = 'Pedido ' + o.number + ' listo para recoger';
+  } else if (ph) {
+    title = 'Tu ' + ref + ' avanza: ' + ph.name;
+    subject = 'Pedido ' + o.number + ' · ' + ph.name;
   } else {
-    title = 'Tu pedido #' + o.id + ' avanza' + (ph ? ': ' + ph.name : '');
-    subject = 'Pedido #' + o.id + (ph ? ' · ' + ph.name : ' · ' + o.status);
+    title = 'Tu ' + ref + ': ' + o.status;
+    subject = 'Pedido ' + o.number + ' · ' + o.status;
   }
-  const body = (ph && o.status !== 'Entregado' ? `<p>${mail.esc(ph.descr || '')}</p>` : '') + linesSummaryHtml(o);
+  const body = (ph && o.status !== 'Entregado' ? `<p>${mail.esc(ph.descr || '')}</p>` : '') + (o.client_view === 'cronograma' ? linesSummaryHtml(o) : `<p style="color:#a8a8a8;font-size:13px">${o.units} unidades</p>`);
   await mail.notifyClient(o.client_id, subject, title, body);
 }
 
 /* ---------- creación de pedidos ---------- */
-function createOrder({ client, origin, user, order_date, channel, notes, lines }) {
+function createOrder({ client, origin, user, order_date, channel, notes, lines, number, title, client_view }) {
   const tpl = db.prepare('SELECT * FROM phase_template ORDER BY sort,id').all();
   const tx = db.transaction(() => {
     const id = db.prepare(
-      'INSERT INTO orders(client_id,origin,created_by,order_date,channel,notes) VALUES (?,?,?,?,?,?)'
-    ).run(client.id, origin, user.id, order_date, clean(channel, 60), clean(notes, 2000)).lastInsertRowid;
+      'INSERT INTO orders(client_id,origin,created_by,order_date,channel,notes,number,title,client_view) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).run(client.id, origin, user.id, order_date, clean(channel, 60), clean(notes, 2000), number || nextNumber(), clean(title, 120), client_view === 'cronograma' ? 'cronograma' : 'estado').lastInsertRowid;
     writeLines(id, lines);
     writePhases(id, tpl.map(p => ({ ...p, enabled: true })));
     logStatus(id, origin === 'admin' ? 'Pedido introducido por MSH' : 'Pedido recibido', user);
@@ -191,7 +216,7 @@ app.get('/api/me', (req, res) => {
   if (!req.user) return res.json({ user: null, needsSetup });
   const out = { user: { id: req.user.id, email: req.user.email, name: req.user.name, role: req.user.role }, today: todayStr() };
   if (req.user.role === 'client') {
-    out.client = db.prepare('SELECT id,name,slug,color,crest,allow_packs,allow_products,allow_free FROM clients WHERE id=?').get(req.user.client_id);
+    out.client = db.prepare('SELECT id,name,slug,color,crest,allow_packs,allow_products,allow_free,can_order FROM clients WHERE id=?').get(req.user.client_id);
   }
   res.json(out);
 });
@@ -237,7 +262,11 @@ const crestUpload = uploader({
   ext: n => path.extname(n).toLowerCase()
 });
 const docUpload = uploader({
-  dir: path.join(DATA, 'uploads'), limit: 20 * 1024 * 1024, accept: /\.pdf$/i, ext: () => '.pdf'
+  dir: path.join(DATA, 'uploads'), limit: 20 * 1024 * 1024, accept: /\.(pdf|png|jpe?g|webp|xlsx?|csv)$/i,
+  ext: n => path.extname(n).toLowerCase()
+});
+const photoUpload = uploader({
+  dir: path.join(DATA, 'photos'), limit: 8 * 1024 * 1024, accept: /\.(png|jpe?g|webp)$/i, ext: n => path.extname(n).toLowerCase().replace('.jpeg', '.jpg')
 });
 
 app.get('/api/clients', auth.requireAdmin, (req, res) => {
@@ -246,7 +275,7 @@ app.get('/api/clients', auth.requireAdmin, (req, res) => {
       (SELECT COUNT(*) FROM users u WHERE u.client_id=c.id AND u.role='client') AS users_n,
       (SELECT COUNT(*) FROM orders o WHERE o.client_id=c.id AND o.status<>'Entregado') AS active_orders,
       (SELECT COUNT(*) FROM orders o WHERE o.client_id=c.id) AS total_orders
-     FROM clients c ORDER BY c.name COLLATE NOCASE`
+     FROM clients c ORDER BY c.sort_order, c.id`
   ).all();
   res.json(rows);
 });
@@ -255,9 +284,11 @@ app.post('/api/clients', auth.requireAdmin, (req, res) => {
   if (!name) throw bad('Escribe el nombre del cliente');
   let slug = slugify(req.body.slug || name), base = slug, i = 2;
   while (db.prepare('SELECT 1 FROM clients WHERE slug=?').get(slug)) slug = base + '-' + i++;
-  const id = db.prepare('INSERT INTO clients(name,slug,color,allow_packs,allow_products,allow_free) VALUES (?,?,?,?,?,?)').run(
+  const so = (db.prepare('SELECT MAX(sort_order) AS m FROM clients').get().m || 0) + 1;
+  const id = db.prepare('INSERT INTO clients(name,slug,color,allow_packs,allow_products,allow_free,can_order,sort_order) VALUES (?,?,?,?,?,?,?,?)').run(
     name, slug, isHex(req.body.color) ? req.body.color : '#d4af37',
-    req.body.allow_packs === false ? 0 : 1, req.body.allow_products ? 1 : 0, req.body.allow_free === false ? 0 : 1
+    req.body.allow_packs === false ? 0 : 1, req.body.allow_products ? 1 : 0, req.body.allow_free === false ? 0 : 1,
+    req.body.can_order ? 1 : 0, so   // un cliente nuevo solo puede ver el estado hasta que MSH le deje pedir
   ).lastInsertRowid;
   res.json(db.prepare('SELECT * FROM clients WHERE id=?').get(id));
 });
@@ -265,11 +296,20 @@ app.put('/api/clients/:id', auth.requireAdmin, (req, res) => {
   const c = db.prepare('SELECT * FROM clients WHERE id=?').get(req.params.id);
   if (!c) throw bad('Cliente no encontrado', 404);
   const b = req.body;
-  db.prepare('UPDATE clients SET name=?,color=?,allow_packs=?,allow_products=?,allow_free=?,active=? WHERE id=?').run(
+  db.prepare('UPDATE clients SET name=?,color=?,allow_packs=?,allow_products=?,allow_free=?,active=?,can_order=? WHERE id=?').run(
     clean(b.name, 120) || c.name, isHex(b.color) ? b.color : c.color,
-    b.allow_packs ? 1 : 0, b.allow_products ? 1 : 0, b.allow_free ? 1 : 0, b.active === false ? 0 : 1, c.id
+    b.allow_packs ? 1 : 0, b.allow_products ? 1 : 0, b.allow_free ? 1 : 0, b.active === false ? 0 : 1,
+    b.can_order === undefined ? c.can_order : (b.can_order ? 1 : 0), c.id
   );
   res.json(db.prepare('SELECT * FROM clients WHERE id=?').get(c.id));
+});
+app.put('/api/client-order', auth.requireAdmin, (req, res) => {
+  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(Number).filter(Boolean);
+  db.transaction(() => {
+    const up = db.prepare('UPDATE clients SET sort_order=? WHERE id=?');
+    ids.forEach((id, i) => up.run(i + 1, id));
+  })();
+  res.json({ ok: true });
 });
 app.post('/api/clients/:id/crest', auth.requireAdmin, crestUpload.single('file'), (req, res) => {
   const c = db.prepare('SELECT * FROM clients WHERE id=?').get(req.params.id);
@@ -348,7 +388,7 @@ app.put('/api/clients/:id/catalog', auth.requireAdmin, (req, res) => {
     name: clean(p.name, 150),
     sizes: String(p.sizes || '').split(',').map(s => s.trim()).filter(Boolean).join(','),
     price: p.price === '' || p.price == null || isNaN(Number(p.price)) ? null : Number(p.price),
-    finishes: p.finishes || {}
+    photo: validPhoto(p.photo), finishes: p.finishes || {}
   })).filter(p => p.name);
   const packs = (b.packs || []).map(p => ({
     name: clean(p.name, 150),
@@ -368,10 +408,10 @@ app.put('/api/clients/:id/catalog', auth.requireAdmin, (req, res) => {
     const fId = new Map(), pId = new Map();
     const insF = db.prepare('INSERT INTO finishes(client_id,name,asks_value,value_label,sort) VALUES (?,?,?,?,?)');
     finishes.forEach((f, i) => fId.set(f.name, insF.run(cid, f.name, f.asks_value, f.value_label, i).lastInsertRowid));
-    const insP = db.prepare('INSERT INTO products(client_id,name,sizes,price,sort) VALUES (?,?,?,?,?)');
+    const insP = db.prepare('INSERT INTO products(client_id,name,sizes,price,sort,photo) VALUES (?,?,?,?,?,?)');
     const insPF = db.prepare('INSERT INTO product_finishes(product_id,finish_id,mode) VALUES (?,?,?)');
     products.forEach((p, i) => {
-      const id = insP.run(cid, p.name, p.sizes, p.price, i).lastInsertRowid;
+      const id = insP.run(cid, p.name, p.sizes, p.price, i, p.photo).lastInsertRowid;
       pId.set(p.name, id);
       Object.keys(p.finishes).forEach(fn => {
         const mode = p.finishes[fn];
@@ -414,38 +454,43 @@ app.get('/api/orders', auth.requireUser, (req, res) => {
   if (req.query.scope === 'active') where.push("status<>'Entregado'");
   if (req.query.scope === 'delivered') where.push("status='Entregado'");
   const rows = db.prepare('SELECT id FROM orders' + (where.length ? ' WHERE ' + where.join(' AND ') : '') + ' ORDER BY id DESC').all(...params);
-  res.json(rows.map(r => loadOrder(r.id)));
+  res.json(rows.map(r => present(req.user, loadOrder(r.id))));
 });
 app.get('/api/orders/:id', auth.requireUser, (req, res) => {
   const o = loadOrder(Number(req.params.id));
   if (!o || !canSee(req.user, o)) throw bad('Pedido no encontrado', 404);
-  res.json(o);
+  res.json(present(req.user, o));
 });
+
+app.get('/api/next-number', auth.requireAdmin, (req, res) => res.json({ number: nextNumber() }));
 
 app.post('/api/orders', auth.requireUser, wrap(async (req, res) => {
   const b = req.body || {};
-  let client, origin, order_date;
+  let client, origin, order_date, number = null, client_view = 'estado';
   if (req.user.role === 'client') {
     client = db.prepare('SELECT * FROM clients WHERE id=? AND active=1').get(req.user.client_id);
+    if (client && !client.can_order) throw bad('Tu cuenta solo puede consultar pedidos. Para hacer uno, contacta con MSH.', 403);
     origin = 'cliente';
     order_date = todayStr();
   } else {
     client = db.prepare('SELECT * FROM clients WHERE id=?').get(Number(b.client_id));
     origin = 'admin';
     order_date = isDate(b.order_date) ? b.order_date : todayStr();
+    number = pickNumber(b.number);
+    client_view = b.client_view === 'cronograma' ? 'cronograma' : 'estado';
   }
   if (!client) throw bad('Cliente no encontrado', 404);
-  const lines = cleanLines(b.lines, client, req.user.role === 'client');
-  const id = createOrder({ client, origin, user: req.user, order_date, channel: b.channel, notes: b.notes, lines });
+  const lines = cleanLines(b.lines, client, req.user.role === 'client', true);
+  const id = createOrder({ client, origin, user: req.user, order_date, channel: b.channel, notes: b.notes, lines, number, title: b.title, client_view });
   const o = loadOrder(id);
   if (origin === 'cliente') {
-    await mail.notifyAdmin('Nuevo pedido #' + id + ' de ' + client.name, 'Nuevo pedido #' + id + ' de ' + client.name,
+    await mail.notifyAdmin('Nuevo ' + orderRef(o) + ' de ' + client.name, 'Nuevo ' + orderRef(o) + ' de ' + client.name,
       `<p>${o.units} unidades en ${o.lines.length} líneas.</p>`);
   } else {
-    await mail.notifyClient(client.id, 'Hemos registrado tu pedido #' + id, 'Hemos registrado tu pedido #' + id,
-      `<p>Lo hemos introducido con fecha ${mail.esc(order_date)}.</p>` + linesSummaryHtml(o));
+    await mail.notifyClient(client.id, 'Hemos registrado tu ' + orderRef(o), 'Hemos registrado tu ' + orderRef(o),
+      `<p>Lo hemos introducido con fecha ${mail.esc(order_date)}.</p>` + (client_view === 'cronograma' ? linesSummaryHtml(o) : ''));
   }
-  res.json(o);
+  res.json(present(req.user, o));
 }));
 
 // Edición de un pedido ya enviado: solo administradores
@@ -453,17 +498,28 @@ app.put('/api/orders/:id', auth.requireAdmin, (req, res) => {
   const o = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
   if (!o) throw bad('Pedido no encontrado', 404);
   const client = db.prepare('SELECT * FROM clients WHERE id=?').get(o.client_id);
-  const lines = cleanLines(req.body.lines, client, false);
+  const lines = cleanLines(req.body.lines, client, false, false);
+  const number = pickNumber(req.body.number, o.id) || o.number;
+  const view = req.body.client_view === 'cronograma' ? 'cronograma' : req.body.client_view === 'estado' ? 'estado' : o.client_view;
   db.transaction(() => {
     writeLines(o.id, lines);
-    db.prepare('UPDATE orders SET order_date=?,channel=?,notes=?,updated_at=datetime(\'now\') WHERE id=?').run(
-      isDate(req.body.order_date) ? req.body.order_date : o.order_date, clean(req.body.channel, 60), clean(req.body.notes, 2000), o.id
+    db.prepare('UPDATE orders SET order_date=?,channel=?,notes=?,number=?,title=?,client_view=?,updated_at=datetime(\'now\') WHERE id=?').run(
+      isDate(req.body.order_date) ? req.body.order_date : o.order_date, clean(req.body.channel, 60), clean(req.body.notes, 2000),
+      number, req.body.title == null ? o.title : clean(req.body.title, 120), view, o.id
     );
     logStatus(o.id, 'Pedido modificado por MSH', req.user);
   })();
   res.json(loadOrder(o.id));
 });
 
+app.post('/api/orders/:id/view', auth.requireAdmin, (req, res) => {
+  const o = db.prepare('SELECT id FROM orders WHERE id=?').get(req.params.id);
+  if (!o) throw bad('Pedido no encontrado', 404);
+  const v = req.body.client_view === 'cronograma' ? 'cronograma' : 'estado';
+  db.prepare("UPDATE orders SET client_view=?,updated_at=datetime('now') WHERE id=?").run(v, o.id);
+  logStatus(o.id, 'El cliente ve: ' + (v === 'cronograma' ? 'el cronograma completo' : 'solo el estado'), req.user);
+  res.json(loadOrder(o.id));
+});
 app.put('/api/orders/:id/phases', auth.requireAdmin, (req, res) => {
   const o = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
   if (!o) throw bad('Pedido no encontrado', 404);
@@ -522,7 +578,7 @@ app.post('/api/orders/:id/advance', auth.requireAdmin, wrap(async (req, res) => 
     logStatus(o.id, what, req.user);
   })();
   const out = loadOrder(o.id);
-  if (dir > 0) await mailProgress(out);
+  if (dir > 0 && (out.status !== o.status || out.client_view === 'cronograma')) await mailProgress(out);
   res.json(out);
 }));
 
@@ -537,16 +593,20 @@ app.delete('/api/orders/:id', auth.requireAdmin, (req, res) => {
 app.post('/api/orders/:id/docs', auth.requireAdmin, docUpload.single('file'), (req, res) => {
   const o = db.prepare('SELECT id FROM orders WHERE id=?').get(req.params.id);
   if (!o) throw bad('Pedido no encontrado', 404);
-  const kind = req.body.kind === 'factura' ? 'factura' : 'albaran';
-  if (!req.file) throw bad('Sube un archivo PDF (máximo 20 MB)');
+  const kind = ['factura', 'pedido'].includes(req.body.kind) ? req.body.kind : 'albaran';
+  if (!req.file) throw bad(kind === 'pedido' ? 'Sube una foto, un PDF o un Excel (máximo 20 MB)' : 'Sube un archivo PDF (máximo 20 MB)');
+  if (kind !== 'pedido' && !/\.pdf$/i.test(req.file.filename)) {
+    fs.unlink(path.join(DATA, 'uploads', req.file.filename), () => {});
+    throw bad('El albarán y la factura tienen que ser PDF');
+  }
   db.prepare('INSERT INTO documents(order_id,kind,filename,stored,size) VALUES (?,?,?,?,?)')
     .run(o.id, kind, clean(req.file.originalname, 200), req.file.filename, req.file.size);
-  logStatus(o.id, (kind === 'factura' ? 'Factura' : 'Albarán') + ' subido', req.user);
+  logStatus(o.id, (kind === 'factura' ? 'Factura' : kind === 'pedido' ? 'Pedido inicial' : 'Albarán') + ' subido', req.user);
   res.json(loadOrder(o.id));
 });
 app.get('/api/docs/:id', auth.requireUser, (req, res) => {
   const d = db.prepare('SELECT d.*,o.client_id FROM documents d JOIN orders o ON o.id=d.order_id WHERE d.id=?').get(req.params.id);
-  if (!d || (req.user.role !== 'admin' && req.user.client_id !== d.client_id)) throw bad('Documento no encontrado', 404);
+  if (!d || (req.user.role !== 'admin' && (req.user.client_id !== d.client_id || d.kind === 'pedido'))) throw bad('Documento no encontrado', 404);
   res.download(path.join(DATA, 'uploads', d.stored), d.filename);
 });
 app.delete('/api/docs/:id', auth.requireAdmin, (req, res) => {
@@ -556,6 +616,16 @@ app.delete('/api/docs/:id', auth.requireAdmin, (req, res) => {
     fs.unlink(path.join(DATA, 'uploads', d.stored), () => {});
   }
   res.json({ ok: true });
+});
+
+/* ---------- fotos (productos y líneas libres) ---------- */
+app.post('/api/photos', auth.requireUser, photoUpload.single('file'), (req, res) => {
+  if (req.user.role === 'client') {
+    const c = db.prepare('SELECT can_order FROM clients WHERE id=?').get(req.user.client_id);
+    if (!c || !c.can_order) { if (req.file) fs.unlink(path.join(DATA, 'photos', req.file.filename), () => {}); throw bad('No permitido', 403); }
+  }
+  if (!req.file) throw bad('Sube una imagen PNG, JPG o WEBP (máximo 8 MB)');
+  res.json({ photo: req.file.filename });
 });
 
 /* ---------- producción ---------- */
@@ -569,21 +639,21 @@ function productionData(q) {
   const orders = rows.map(r => loadOrder(r.id));
   const art = new Map(), fin = new Map();
   orders.forEach(o => o.lines.forEach(l => {
-    const label = l.kind === 'free' ? 'Línea libre: ' + l.product_name : l.product_name;
+    const label = l.kind === 'free' ? 'Línea libre: ' + l.product_name + (l.color ? ' · ' + l.color : '') : l.product_name;
     const key = label + '|' + (l.size || '');
     const a = art.get(key) || { article: label, size: l.size || '', qty: 0, orders: new Set() };
-    a.qty += l.qty; a.orders.add(o.id); art.set(key, a);
+    a.qty += l.qty; a.orders.add(o.number); art.set(key, a);
     l.finishes.forEach(f => {
       const x = fin.get(f.name) || { finish: f.name, qty: 0, by_product: new Map(), values: [] };
       x.qty += l.qty;
       x.by_product.set(l.product_name, (x.by_product.get(l.product_name) || 0) + l.qty);
-      if (f.value) x.values.push({ order_id: o.id, product: l.product_name, size: l.size, qty: l.qty, value: f.value });
+      if (f.value) x.values.push({ order_id: o.number, product: l.product_name, size: l.size, qty: l.qty, value: f.value });
       fin.set(f.name, x);
     });
   }));
   return {
     orders: orders.map(o => ({
-      id: o.id, client_id: o.client_id, client_name: o.client_name, order_date: o.order_date, status: o.status,
+      id: o.id, number: o.number, title: o.title, client_id: o.client_id, client_name: o.client_name, order_date: o.order_date, status: o.status,
       est_delivery: o.est_delivery, lines: o.lines
     })),
     articles: [...art.values()].map(a => ({ ...a, orders: [...a.orders] })).sort((a, b) => a.article.localeCompare(b.article) || a.size.localeCompare(b.size)),
@@ -640,6 +710,7 @@ app.get('/api/emails', auth.requireAdmin, (req, res) => {
 
 /* ---------- estáticos y errores ---------- */
 app.static('/crests', path.join(DATA, 'crests'), { maxAge: 604800 });
+app.static('/photos', path.join(DATA, 'photos'), { maxAge: 604800 });
 app.static('/', path.join(__dirname, '..', 'public'));
 app.get('/healthz', (req, res) => res.send('ok'));
 app.onError((err, req, res) => {

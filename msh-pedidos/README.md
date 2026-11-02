@@ -27,3 +27,12 @@ Todo (base de datos, escudos, PDF) está en la carpeta data/ del servidor. Haz c
 2. Plazos: revisa las fases por defecto.
 3. Clientes: crea el cliente, sube su escudo, añade sus usuarios.
 4. Catálogo: acabados, productos y packs de ese cliente.
+
+## Actualizar sin perder datos
+
+La base de datos se actualiza sola al arrancar y antes de migrar guarda una copia en data/backups/.
+
+    cd /root/MSHGESTION
+    git pull
+    cd /root/MSHGESTION/msh-pedidos
+    docker compose up -d --build

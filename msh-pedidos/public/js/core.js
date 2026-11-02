@@ -56,9 +56,35 @@ const shieldHTML = o => {
     : `<div class="shield" style="background:${esc(o.client_color || '#d4af37')}">${esc(initials(o.client_name))}</div>`;
 };
 
+/* ===== pedidos: número, título y fotos ===== */
+const ordTitle = o => 'Pedido ' + o.number + (o.title ? ' - ' + o.title : '');
+const photoURL = f => '/photos/' + encodeURIComponent(f);
+const thumb = (f, big) => f ? `<a href="${photoURL(f)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"><img class="thumb ${big ? 'big' : ''}" src="${photoURL(f)}" alt="Foto" loading="lazy"></a>` : '';
+async function shrinkImage(file, max) {
+  max = max || 1600;
+  if (!/^image\/(jpeg|png|webp)$/.test(file.type)) return file;
+  try {
+    const bmp = await createImageBitmap(file);
+    const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    if (k === 1 && file.size < 1.5e6) return file;
+    const c = document.createElement('canvas');
+    c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+    return blob ? new File([blob], 'foto.jpg', { type: 'image/jpeg' }) : file;
+  } catch (e) { return file; }
+}
+async function uploadPhoto(file) {
+  const f = await shrinkImage(file);
+  const fd = new FormData();
+  fd.append('file', f, f.name || 'foto.jpg');
+  return (await api('POST', '/api/photos', fd)).photo;
+}
+
 /* ===== iconos ===== */
 const IC = {
   orders: '<path d="M9 3.5h6l1 2h3.5v15h-14v-15H8l1-2z"/><path d="M9 12h6M9 16h4"/>',
+  mine: '<path d="M9 3.5h6l1 2h3.5v15h-14v-15H8l1-2z"/><path d="M9 12h6M9 16h4"/>',
   hist: '<path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.5"/><path d="M3.5 3.5v5h5M12 7.5V12l3 2"/>',
   new: '<rect x="4" y="4" width="16" height="16" rx="5"/><path d="M12 8v8M8 12h8"/>',
   clients: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 3-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.7a3.5 3.5 0 0 1 0 6.6M18.5 14.3c1.9.8 3 2.7 3 5.7"/>',
@@ -91,7 +117,7 @@ function go(path) { if (location.hash === '#/' + path) route(); else location.ha
 function renderApp() {
   if (!S.me) return renderLogin();
   const admin = S.me.role === 'admin';
-  const nav = admin ? ADMIN_NAV : CLIENT_NAV;
+  const nav = admin ? ADMIN_NAV : (S.client.can_order ? CLIENT_NAV : [['mine', 'Mis pedidos']]);
   const head = admin
     ? `<div class="brand">MSH <em>Pedidos</em></div>`
     : `<div style="display:flex;align-items:center;gap:14px">${crestHTML(S.client, true)}<div><div class="mini">Panel de pedidos</div><div class="clname">${esc(S.client.name)}</div></div></div>`;
@@ -112,7 +138,7 @@ async function route() {
   const parts = (location.hash.replace(/^#\/?/, '') || '').split('/');
   const admin = S.me.role === 'admin';
   const views = admin ? ADMIN_VIEWS : CLIENT_VIEWS;
-  const name = views[parts[0]] ? parts[0] : (admin ? 'orders' : 'new');
+  const name = views[parts[0]] ? parts[0] : (admin ? 'orders' : (S.client.can_order ? 'new' : 'mine'));
   const nav = NAV_ALIAS[name] || name;
   document.querySelectorAll('#topnav a').forEach(a => a.classList.toggle('on', a.dataset.k === nav));
   const main = $('main');
@@ -172,7 +198,8 @@ function seg(o) {
   return `<div class="seg">${en.map((p, i) => `<i style="--c:${esc(p.color)}" class="${i < c ? 'd' : i === c ? 'c' : ''}" title="${esc(p.name)}"></i>`).join('')}</div>`;
 }
 
-function gantt(o) {
+function gantt(o, opt) {
+  opt = opt || {};
   const en = enabledPh(o);
   if (!en.length) return '<div class="gt"><div class="empty">Este pedido no tiene fases activas.</div></div>';
   const tot = estTotal(o);
@@ -188,9 +215,9 @@ function gantt(o) {
     if (showToday && Math.abs(pct(d) - pct(el)) < 7) continue;
     ticks += `<span style="left:${pct(d)}%">${d}</span>`;
   }
-  const hoy = showToday ? `<span class="hoy" style="left:${pct(el)}%;${pct(el) > 80 ? 'transform:translateX(-100%)' : ''}">Hoy · día ${el}</span>` : '';
-  const M = window.innerWidth < 900;
-  const TW = M ? Math.max(200, window.innerWidth - 150) : 850;
+  const hoy = showToday ? `<span class="hoy" style="left:${pct(el)}%;${pct(el) > 80 ? 'transform:translateX(-100%)' : pct(el) < 12 ? 'transform:none' : ''}">Hoy · día ${el}</span>` : '';
+  const M = opt.wide ? false : window.innerWidth < 900;
+  const TW = opt.tw || (M ? Math.max(200, window.innerWidth - 150) : 850);
   let off = 0;
   const rows = en.map((p, i) => {
     const w = +p.max_days || 0, left = pct(off), width = pct(w);
@@ -251,13 +278,21 @@ function linesHTML(o) {
       groups.get(k).lines.push(l);
     } else out.push(l);
   });
+  const sub = l => `<span class="mini">${l.size ? '· talla ' + esc(l.size) : ''}${l.color ? ' · color ' + esc(l.color) : ''}${l.kind === 'free' ? ' · fuera de catálogo' : ''}</span>`;
   return out.map(g => {
     if (g.lines) {
       return `<div class="box" style="padding:12px 16px"><div style="font-weight:600;margin-bottom:6px">${esc(g.name)} <span class="mini">× ${g.lines[0].qty}</span></div>
-        ${g.lines.map(l => `<div class="sumrow" style="padding:7px 0"><span>${esc(l.product_name)} <span class="mini">${l.size ? '· talla ' + esc(l.size) : ''}</span></span><span>${finChips(l.finishes) || '<span class="mini">sin acabado</span>'}</span></div>`).join('')}</div>`;
+        ${g.lines.map(l => `<div class="sumrow" style="padding:7px 0"><span>${thumb(l.photo)}${esc(l.product_name)} ${sub(l)}</span><span>${finChips(l.finishes) || '<span class="mini">sin acabado</span>'}</span></div>`).join('')}</div>`;
     }
-    return `<div class="sumrow"><span>${g.qty} × ${esc(g.product_name)} <span class="mini">${g.size ? '· talla ' + esc(g.size) : ''}${g.kind === 'free' ? ' · fuera de catálogo' : ''}</span></span><span>${finChips(g.finishes) || '<span class="mini">sin acabado</span>'}</span></div>`;
+    return `<div class="sumrow"><span>${thumb(g.photo)}${g.qty} × ${esc(g.product_name)} ${sub(g)}</span><span>${finChips(g.finishes) || '<span class="mini">sin acabado</span>'}</span></div>`;
   }).join('');
 }
+const STATUS_STEPS = ['Recibido', 'Procesando', 'Listo para recoger', 'Entregado'];
+function estadoBox(o) {
+  const idx = STATUS_STEPS.indexOf(o.status);
+  return `<div class="box"><div class="seg" style="gap:6px">${STATUS_STEPS.map((s, i) => `<i style="--c:var(--accent);height:10px" class="${i < idx || o.status === 'Entregado' ? 'd' : i === idx ? 'c' : ''}"></i>`).join('')}</div>
+    <div class="row" style="justify-content:space-between;margin-top:8px">${STATUS_STEPS.map((s, i) => `<span class="mini" style="${i === idx ? 'color:var(--ink);font-weight:600' : ''}">${s}</span>`).join('')}</div></div>`;
+}
+const showsGantt = o => o.client_view === 'cronograma' && o.phases && o.phases.length;
 const docLinks = o => (o.docs || []).map(d =>
   `<a href="/api/docs/${d.id}">${d.kind === 'factura' ? 'Factura' : 'Albarán'} · ${esc(d.filename)}</a>`).join('');

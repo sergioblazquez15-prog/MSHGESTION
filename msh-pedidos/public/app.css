@@ -204,3 +204,21 @@
     .topbar .who span{display:none;}
   }
 .cl-main .ph h2{font-family:var(--sans);font-size:17px;font-weight:600;margin:0;line-height:1.3;}
+
+/* ---- v2: fotos, líneas libres, orden ---- */
+.thumb{width:40px;height:40px;object-fit:cover;border-radius:10px;border:1px solid var(--line2);vertical-align:middle;margin-right:10px;background:var(--bg3);}
+.thumb.big{width:64px;height:64px;}
+.itemrow .pname,.prodrow>div:first-child{display:flex;align-items:center;}
+.itemrow .pname .thumb{flex-shrink:0;}
+.free{grid-template-columns:1fr 100px 150px 90px 44px;}
+.freeitem{margin-bottom:14px;padding-bottom:12px;border-bottom:1px dashed var(--line2);}
+.freeitem .free{margin-bottom:8px;}
+.freephoto{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.freephoto label{cursor:pointer;}
+.arrows{display:flex;gap:6px;}
+.cardgrid .ccard .arrows .x{padding:5px 12px;}
+.seg i{--c:var(--accent);}
+@media(max-width:900px){
+  .free{grid-template-columns:1fr 1fr;} .free input:first-child{grid-column:1/-1;}
+  .free input:nth-child(3){grid-column:1/-1;}
+}

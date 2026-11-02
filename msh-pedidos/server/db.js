@@ -5,8 +5,12 @@ const fs = require('fs');
 const DATA = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 fs.mkdirSync(path.join(DATA, 'uploads'), { recursive: true });
 fs.mkdirSync(path.join(DATA, 'crests'), { recursive: true });
+fs.mkdirSync(path.join(DATA, 'photos'), { recursive: true });
+fs.mkdirSync(path.join(DATA, 'backups'), { recursive: true });
 
-const db = new DatabaseSync(path.join(DATA, 'msh.db'));
+const DBFILE = path.join(DATA, 'msh.db');
+const existed = fs.existsSync(DBFILE);
+const db = new DatabaseSync(DBFILE);
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA foreign_keys = ON');
 // Transacciones: db.transaction(fn) devuelve una función que ejecuta fn dentro de BEGIN/COMMIT
@@ -139,7 +143,7 @@ CREATE TABLE IF NOT EXISTS phase_template(
 CREATE TABLE IF NOT EXISTS documents(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK(kind IN ('albaran','factura')),
+  kind TEXT NOT NULL CHECK(kind IN ('albaran','factura','pedido')),
   filename TEXT NOT NULL,
   stored TEXT NOT NULL,
   size INTEGER,
@@ -165,6 +169,50 @@ CREATE TABLE IF NOT EXISTS email_log(
   error TEXT
 );
 `);
+
+
+/* ---------- Migraciones (conservan todos los datos existentes) ---------- */
+const SCHEMA_VERSION = 2;
+const ver = db.prepare('PRAGMA user_version').get().user_version;
+if (ver < SCHEMA_VERSION) {
+  if (existed && ver === 0) {
+    // Copia de seguridad automática antes de tocar una base de datos de una versión anterior
+    try {
+      db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      fs.copyFileSync(DBFILE, path.join(DATA, 'backups', 'msh-antes-de-v2-' + stamp + '.db'));
+    } catch (e) { console.error('No se pudo hacer la copia de seguridad previa:', e.message); }
+  }
+  const hasCol = (t, c) => db.prepare('PRAGMA table_info(' + t + ')').all().some(x => x.name === c);
+  const addCol = (t, c, def) => { if (!hasCol(t, c)) db.exec('ALTER TABLE ' + t + ' ADD COLUMN ' + c + ' ' + def); };
+  db.transaction(() => {
+    addCol('orders', 'number', 'INTEGER');
+    db.exec('UPDATE orders SET number=id WHERE number IS NULL');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_number ON orders(number)');
+    addCol('orders', 'title', "TEXT NOT NULL DEFAULT ''");
+    addCol('orders', 'client_view', "TEXT NOT NULL DEFAULT 'cronograma'");   // pedidos ya existentes: el cliente sigue viendo el cronograma
+    addCol('order_lines', 'color', "TEXT NOT NULL DEFAULT ''");
+    addCol('order_lines', 'photo', "TEXT NOT NULL DEFAULT ''");
+    addCol('products', 'photo', "TEXT NOT NULL DEFAULT ''");
+    addCol('clients', 'can_order', 'INTEGER NOT NULL DEFAULT 1');             // clientes ya existentes: siguen pudiendo pedir
+    addCol('clients', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
+    db.exec('UPDATE clients SET sort_order=id WHERE sort_order=0');
+    // documentos: permitir el tipo "pedido" (pedido inicial para cotejar)
+    const docSql = (db.prepare("SELECT sql FROM sqlite_master WHERE name='documents'").get() || {}).sql || '';
+    if (!docSql.includes("'pedido'")) {
+      db.exec(`CREATE TABLE documents_new(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK(kind IN ('albaran','factura','pedido')),
+        filename TEXT NOT NULL, stored TEXT NOT NULL, size INTEGER,
+        uploaded_at TEXT NOT NULL DEFAULT (datetime('now')));
+        INSERT INTO documents_new(id,order_id,kind,filename,stored,size,uploaded_at) SELECT id,order_id,kind,filename,stored,size,uploaded_at FROM documents;
+        DROP TABLE documents;
+        ALTER TABLE documents_new RENAME TO documents;`);
+    }
+  })();
+  db.exec('PRAGMA user_version = ' + SCHEMA_VERSION);
+}
 
 // Plantilla de fases por defecto (editable desde "Plazos y fases"). No es ni cliente ni artículo.
 if (db.prepare('SELECT COUNT(*) AS n FROM phase_template').get().n === 0) {
