@@ -134,8 +134,8 @@ function cleanLines(raw, client, enforce, requireColor) {
         fins = [...fixed, ...optional];
       }
     }
-    const color = kind === 'free' ? clean(l.color, 60) : '';
-    if (kind === 'free' && requireColor && !color) throw bad('Indica el color de «' + name + '»');
+    const color = clean(l.color, 60);
+    if (requireColor && !color) throw bad('Indica el color de «' + name + '»');
     const photo = kind === 'free' ? validPhoto(l.photo) : (photoMap.get(name) || validPhoto(l.photo));
     out.push({
       kind, color, photo, group_no: parseInt(l.group_no, 10) || 0,
@@ -512,6 +512,15 @@ app.put('/api/orders/:id', auth.requireAdmin, (req, res) => {
   res.json(loadOrder(o.id));
 });
 
+app.post('/api/orders/:id/meta', auth.requireAdmin, (req, res) => {
+  const o = db.prepare('SELECT * FROM orders WHERE id=?').get(req.params.id);
+  if (!o) throw bad('Pedido no encontrado', 404);
+  const number = pickNumber(req.body.number, o.id) || o.number;
+  const title = clean(req.body.title, 120);
+  db.prepare("UPDATE orders SET number=?,title=?,updated_at=datetime('now') WHERE id=?").run(number, title, o.id);
+  logStatus(o.id, 'Datos del pedido: nº ' + number + (title ? ' · ' + title : ''), req.user);
+  res.json(loadOrder(o.id));
+});
 app.post('/api/orders/:id/view', auth.requireAdmin, (req, res) => {
   const o = db.prepare('SELECT id FROM orders WHERE id=?').get(req.params.id);
   if (!o) throw bad('Pedido no encontrado', 404);
@@ -639,7 +648,7 @@ function productionData(q) {
   const orders = rows.map(r => loadOrder(r.id));
   const art = new Map(), fin = new Map();
   orders.forEach(o => o.lines.forEach(l => {
-    const label = l.kind === 'free' ? 'Línea libre: ' + l.product_name + (l.color ? ' · ' + l.color : '') : l.product_name;
+    const label = (l.kind === 'free' ? 'Línea libre: ' : '') + l.product_name + (l.color ? ' · ' + l.color : '');
     const key = label + '|' + (l.size || '');
     const a = art.get(key) || { article: label, size: l.size || '', qty: 0, orders: new Set() };
     a.qty += l.qty; a.orders.add(o.number); art.set(key, a);

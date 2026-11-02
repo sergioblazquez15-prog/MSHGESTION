@@ -105,6 +105,10 @@ A.detailHTML = function (o) {
   <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:18px"><div class="row" style="gap:16px">${crestHTML({ name: o.client_name, crest: o.client_crest, color: o.client_color }, true)}
    <div><h1>${esc(ordTitle(o))}</h1><div class="sub" style="margin:6px 0 0">${esc(o.client_name)} · ${fmt(o.order_date)}${o.channel ? ' · ' + esc(o.channel) : ''}${o.origin === 'admin' ? ' · introducido por MSH' : ' · enviado por el cliente'}</div></div></div>
    <span class="st ${stKey(o.status)}" style="font-size:14px">${esc(o.status)}</span></div>
+  <div class="panel"><div class="ph"><h2>Datos del pedido</h2></div><div class="pb"><div class="row" style="align-items:flex-end">
+   <div class="field" style="margin:0;width:120px"><label>Nº de pedido</label><input type="number" min="1" id="m-num" value="${o.number}" style="width:100%"></div>
+   <div class="field" style="margin:0;flex:1;min-width:220px"><label>Título o detalle</label><input type="text" id="m-title" value="${esc(o.title || '')}" placeholder="Ej. Tallaje Encinas" style="width:100%"></div>
+   <button class="btn amber" onclick="A.saveMeta()">Guardar</button><button class="btn ghost" onclick="go('edit/${o.id}')">Editar artículos y fecha</button></div></div></div>
   <div class="panel"><div class="ph"><h2>Seguimiento</h2><span class="btnrow"><a class="btn ghost sm" style="text-decoration:none" target="_blank" href="/print.html?id=${o.id}">Exportar PDF</a>
    <button class="btn ghost sm" onclick="A.adv(-1)" ${o.status === 'Recibido' && !o.cur ? 'disabled style="opacity:.4"' : ''}>← Fase anterior</button>
    <button class="btn amber sm" onclick="A.adv(1)" ${fin ? 'disabled style="opacity:.4"' : ''}>Avanzar fase →</button></span></div>
@@ -114,7 +118,7 @@ A.detailHTML = function (o) {
    <div class="row" style="margin-top:14px"><span class="mini">El cliente ve:</span><button class="chip ${o.client_view === 'estado' ? 'on' : ''}" onclick="A.setView('estado')">Solo el estado</button><button class="chip ${o.client_view === 'cronograma' ? 'on' : ''}" onclick="A.setView('cronograma')">El cronograma completo</button></div></div></div>
   <div class="grid2"><div>
    <div class="panel"><div class="ph"><h2>Artículos · ${o.units} uds</h2><span class="btnrow"><button class="btn ghost sm" onclick="go('edit/${o.id}')">Editar pedido</button></span></div><div class="pb">${linesHTML(o)}${o.notes ? `<p class="hint"><b>Notas:</b> ${esc(o.notes)}</p>` : ''}</div></div>
-   <div class="panel"><div class="ph"><h2>Albarán y factura</h2></div><div class="pb">${A.docsHTML(o)}</div></div></div>
+   <div class="panel"><div class="ph"><h2>Documentos del pedido</h2></div><div class="pb">${A.docsHTML(o)}</div></div></div>
   <div><div class="panel"><div class="ph"><h2>Historial</h2></div><div class="pb">${o.log.map(l => `<div class="logline"><span class="t">${esc(l.at.slice(0, 16))}</span><span>${esc(l.what)}${l.by_user ? ' <span class="mini">· ' + esc(l.by_user) + '</span>' : ''}</span></div>`).join('')}</div></div>
    <div class="panel"><div class="ph"><h2>Zona delicada</h2></div><div class="pb"><button class="btn danger sm" onclick="A.delOrder()">Borrar pedido</button><p class="hint">Solo para pedidos duplicados o de prueba. Se borran también sus documentos.</p></div></div></div></div>
   <div class="panel"><div class="ph"><h2>Fases y plazos de este pedido</h2></div><div class="pb">
@@ -131,6 +135,10 @@ A.docsHTML = function (o) {
   return `<p class="hint" style="margin-top:0">El pedido inicial es solo para ti (foto, PDF o Excel) y el cliente no lo ve. El albarán y la factura van en PDF desde FactuSOL y el cliente los descarga desde su panel.</p>${row('pedido', 'Pedido inicial del cliente (para cotejar)', 'image/*,.pdf,.xls,.xlsx,.csv')}${row('albaran', 'Albarán')}${row('factura', 'Factura')}`;
 };
 A.reload = function () { route(); };
+A.saveMeta = async () => safe(async () => {
+  await api('POST', `/api/orders/${A.o.id}/meta`, { number: $('m-num').value, title: $('m-title').value });
+  toast('Datos guardados'); A.reload();
+});
 A.setView = async (v) => safe(async () => { await api('POST', `/api/orders/${A.o.id}/view`, { client_view: v }); toast(v === 'estado' ? 'El cliente verá solo el estado' : 'El cliente verá el cronograma completo'); A.reload(); });
 A.adv = async (dir) => safe(async () => { await api('POST', `/api/orders/${A.o.id}/advance`, { dir }); toast('Actualizado'); A.reload(); });
 A.setStatus = async (st) => safe(async () => { await api('POST', `/api/orders/${A.o.id}/status`, { status: st }); toast('Estado: ' + st); A.reload(); });

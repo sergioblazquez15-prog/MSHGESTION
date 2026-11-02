@@ -30,7 +30,7 @@ const OF = {
       const f = this.fin(n);
       return { name: n, asks: !!f.asks_value, label: f.value_label || 'Dato', on: false, value: '' };
     });
-    return { product: name, size: '', fixed: Object.keys(p.finishes).filter(n => p.finishes[n] === 'fixed'), fins };
+    return { product: name, size: '', color: '', fixed: Object.keys(p.finishes).filter(n => p.finishes[n] === 'fixed'), fins };
   },
   applyFinishes(item, saved) {
     (saved || []).forEach(sf => {
@@ -48,7 +48,7 @@ const OF = {
         groups.get(k).push(l);
       } else if (l.kind === 'product') {
         if (this.prod(l.product_name)) {
-          const it = this.newItem(l.product_name); it.size = l.size || ''; this.applyFinishes(it, l.finishes);
+          const it = this.newItem(l.product_name); it.size = l.size || ''; it.color = l.color || ''; it.old = !l.color; this.applyFinishes(it, l.finishes);
           s.prods.push({ ...it, qty: l.qty });
         } else s.legacy.push(l);
       } else if (l.finishes && l.finishes.length) s.legacy.push(l);
@@ -59,7 +59,7 @@ const OF = {
       if (!pk || lines.some(l => !this.prod(l.product_name))) { lines.forEach(l => s.legacy.push(l)); return; }
       s.packs.push({
         name: pk.name, qty: lines[0].qty,
-        items: lines.map(l => { const it = this.newItem(l.product_name); it.size = l.size || ''; this.applyFinishes(it, l.finishes); return it; })
+        items: lines.map(l => { const it = this.newItem(l.product_name); it.size = l.size || ''; it.color = l.color || ''; it.old = !l.color; this.applyFinishes(it, l.finishes); return it; })
       });
     });
   },
@@ -117,8 +117,9 @@ const OF = {
   },
   sizeSel(item, k, bi, ii) {
     const p = this.prod(item.product), sz = this.sizes(p);
-    if (!sz.length) return '<span class="mini" style="padding-top:9px;display:block">Talla única</span>';
-    return `<select onchange="OF.size('${k}',${bi},${ii},this.value)"><option value="">Talla…</option>${sz.map(z => `<option ${z === item.size ? 'selected' : ''}>${esc(z)}</option>`).join('')}</select>`;
+    const color = `<input type="text" placeholder="Color (obligatorio)" value="${esc(item.color)}" oninput="OF.color('${k}',${bi},${ii},this.value)" style="width:100%;margin-top:6px">`;
+    if (!sz.length) return '<span class="mini" style="padding-top:9px;display:block">Talla única</span>' + color;
+    return `<select onchange="OF.size('${k}',${bi},${ii},this.value)"><option value="">Talla…</option>${sz.map(z => `<option ${z === item.size ? 'selected' : ''}>${esc(z)}</option>`).join('')}</select>` + color;
   },
   packHTML(b, i) {
     return `<div class="packbox"><div class="packhead"><div class="pn"><div class="packnum">${i + 1}</div><div><div style="font-weight:600;font-size:16px">${esc(b.name)}</div><div class="mini">${b.items.length} artículos por pack</div></div></div>
@@ -137,6 +138,7 @@ const OF = {
   upd() { const el = $('of-count'); if (el) el.textContent = this.count(); },
   item(k, bi, ii) { return k === 'p' ? this.s.packs[bi].items[ii] : this.s.prods[bi]; },
   size(k, bi, ii, v) { this.item(k, bi, ii).size = v; },
+  color(k, bi, ii, v) { this.item(k, bi, ii).color = v; },
   fon(k, bi, ii, fi, el) {
     const f = this.item(k, bi, ii).fins[fi];
     f.on = el.checked; el.closest('.cfgbox').classList.toggle('on', f.on);
@@ -187,17 +189,18 @@ const OF = {
   },
   needSize(item, label) {
     if (this.sizes(this.prod(item.product)).length && !item.size) throw new Error('Elige la talla de «' + item.product + '»' + (label ? ' (' + label + ')' : ''));
+    if (!String(item.color || '').trim() && !item.old) throw new Error('Indica el color de «' + item.product + '»' + (label ? ' (' + label + ')' : ''));
   },
   collect() {
     const s = this.s, out = [];
     s.packs.forEach((b, i) => b.items.forEach(it => {
-      const label = b.name + ' ' + (i + 1);
+      const label = b.name + ', bloque ' + (i + 1);
       this.needSize(it, label);
-      out.push({ kind: 'pack', group_no: i + 1, pack_name: b.name, product_name: it.product, size: it.size, qty: b.qty, finishes: this.fins(it, label) });
+      out.push({ kind: 'pack', group_no: i + 1, pack_name: b.name, product_name: it.product, size: it.size, color: it.color.trim(), qty: b.qty, finishes: this.fins(it, label) });
     }));
     s.prods.forEach(r => {
       this.needSize(r, '');
-      out.push({ kind: 'product', group_no: 0, pack_name: null, product_name: r.product, size: r.size, qty: r.qty, finishes: this.fins(r, 'producto suelto') });
+      out.push({ kind: 'product', group_no: 0, pack_name: null, product_name: r.product, size: r.size, color: r.color.trim(), qty: r.qty, finishes: this.fins(r, 'producto suelto') });
     });
     s.free.forEach(f => {
       if (!f.name.trim()) return;
