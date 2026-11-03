@@ -13,6 +13,7 @@ const ADMIN_VIEWS = {
   async catalog(rest) { return A.catalog(rest[0]); },
   async prod() { return A.production(); },
   async stats() { return ST.view(); },
+  async tasks() { return TK.view(); },
   async phases() { return A.template(); },
   async settings() { return A.settings(); }
 };

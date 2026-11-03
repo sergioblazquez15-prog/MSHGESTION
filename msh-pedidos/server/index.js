@@ -735,6 +735,58 @@ app.get('/api/production.csv', auth.requireAdmin, (req, res) => {
   res.send('﻿' + rows.map(r => r.map(q).join(';')).join('\r\n'));
 });
 
+/* ---------- tareas ---------- */
+const daysBetween = (a, b) => Math.round((new Date(a + 'T12:00:00') - new Date(b + 'T12:00:00')) / 86400000);
+function taskOut(t) {
+  const left = t.due_date ? daysBetween(t.due_date, todayStr()) : null;
+  // rojo: último día o vencida · naranja: queda 1 día · verde: más tiempo · gris: sin fecha límite
+  const level = t.done ? 'done' : left == null ? 'none' : left <= 0 ? 'red' : left === 1 ? 'orange' : 'green';
+  return { id: t.id, title: t.title, notes: t.notes, due_date: t.due_date, assignee_id: t.assignee_id, assignee_name: t.assignee_name,
+    created_by: t.created_by, created_at: t.created_at, done: !!t.done, done_at: t.done_at, done_by: t.done_by, days_left: left, level };
+}
+function taskAssignee(id) {
+  if (!id) return { id: null, name: '' };
+  const u = db.prepare("SELECT id,name,email FROM users WHERE id=? AND role='admin'").get(Number(id));
+  if (!u) throw bad('Ese responsable no existe');
+  return { id: u.id, name: u.name || u.email };
+}
+app.get('/api/tasks', auth.requireAdmin, (req, res) => {
+  const done = req.query.scope === 'done';
+  const rows = db.prepare('SELECT * FROM tasks WHERE done=? ' + (done ? 'ORDER BY done_at DESC,id DESC' : "ORDER BY (due_date IS NULL), due_date, id")).all(done ? 1 : 0);
+  res.json(rows.map(taskOut));
+});
+app.get('/api/tasks/urgent', auth.requireAdmin, (req, res) => {
+  const n = db.prepare('SELECT * FROM tasks WHERE done=0 AND due_date IS NOT NULL').all().map(taskOut).filter(t => t.level === 'red').length;
+  res.json({ red: n });
+});
+app.post('/api/tasks', auth.requireAdmin, (req, res) => {
+  const b = req.body || {}, title = clean(b.title, 200);
+  if (!title) throw bad('Escribe qué hay que hacer');
+  const a = taskAssignee(b.assignee_id);
+  const id = db.prepare('INSERT INTO tasks(title,notes,due_date,assignee_id,assignee_name,created_by) VALUES (?,?,?,?,?,?)')
+    .run(title, clean(b.notes, 1000), isDate(b.due_date) ? b.due_date : null, a.id, a.name, req.user.name || req.user.email).lastInsertRowid;
+  res.json(taskOut(db.prepare('SELECT * FROM tasks WHERE id=?').get(id)));
+});
+app.put('/api/tasks/:id', auth.requireAdmin, (req, res) => {
+  const t = db.prepare('SELECT * FROM tasks WHERE id=?').get(req.params.id);
+  if (!t) throw bad('Tarea no encontrada', 404);
+  const b = req.body || {}, title = clean(b.title, 200) || t.title, a = taskAssignee(b.assignee_id);
+  db.prepare('UPDATE tasks SET title=?,notes=?,due_date=?,assignee_id=?,assignee_name=? WHERE id=?')
+    .run(title, clean(b.notes, 1000), isDate(b.due_date) ? b.due_date : null, a.id, a.name, t.id);
+  res.json(taskOut(db.prepare('SELECT * FROM tasks WHERE id=?').get(t.id)));
+});
+app.post('/api/tasks/:id/done', auth.requireAdmin, (req, res) => {
+  const t = db.prepare('SELECT * FROM tasks WHERE id=?').get(req.params.id);
+  if (!t) throw bad('Tarea no encontrada', 404);
+  if (req.body && req.body.done === false) db.prepare("UPDATE tasks SET done=0,done_at=NULL,done_by='' WHERE id=?").run(t.id);
+  else db.prepare("UPDATE tasks SET done=1,done_at=datetime('now','localtime'),done_by=? WHERE id=?").run(req.user.name || req.user.email, t.id);
+  res.json(taskOut(db.prepare('SELECT * FROM tasks WHERE id=?').get(t.id)));
+});
+app.delete('/api/tasks/:id', auth.requireAdmin, (req, res) => {
+  db.prepare('DELETE FROM tasks WHERE id=?').run(req.params.id);
+  res.json({ ok: true });
+});
+
 /* ---------- estadísticas e informes ---------- */
 const CATS = ['Packs', 'Productos', 'Fuera de catálogo'];
 function statsData(q) {

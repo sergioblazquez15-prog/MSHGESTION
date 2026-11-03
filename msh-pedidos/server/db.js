@@ -156,6 +156,20 @@ CREATE TABLE IF NOT EXISTS status_log(
   what TEXT NOT NULL,
   by_user TEXT
 );
+CREATE TABLE IF NOT EXISTS tasks(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  notes TEXT NOT NULL DEFAULT '',
+  due_date TEXT,
+  assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  assignee_name TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  done INTEGER NOT NULL DEFAULT 0,
+  done_at TEXT,
+  done_by TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_done ON tasks(done);
 CREATE TABLE IF NOT EXISTS settings(
   key TEXT PRIMARY KEY,
   value TEXT
