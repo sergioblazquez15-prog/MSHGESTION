@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS email_log(
 
 
 /* ---------- Migraciones (conservan todos los datos existentes) ---------- */
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 const ver = db.prepare('PRAGMA user_version').get().user_version;
 if (ver < SCHEMA_VERSION) {
   if (existed && ver < SCHEMA_VERSION) {
@@ -281,6 +281,43 @@ if (ver < SCHEMA_VERSION) {
     seed('company_address', 'AVENIDA VALDEARGANDA 4'); seed('company_city', 'ARGANDA DEL REY');
     seed('company_postal', ''); seed('company_phone', ''); seed('company_email', '');
     seed('invoice_next', '207'); seed('invoice_doc_type', '1'); seed('invoice_pay_code', '');
+    // v5: comercial (clubes y empresas), contactos e historial
+    db.exec(`CREATE TABLE IF NOT EXISTS prospects(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL CHECK(kind IN ('club','empresa')),
+      name TEXT NOT NULL,
+      norm TEXT NOT NULL,
+      zone TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT '',
+      city TEXT NOT NULL DEFAULT '',
+      address TEXT NOT NULL DEFAULT '',
+      postal_code TEXT NOT NULL DEFAULT '',
+      phone TEXT NOT NULL DEFAULT '',
+      email TEXT NOT NULL DEFAULT '',
+      web TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'rojo' CHECK(status IN ('rojo','amarillo')),
+      last_contact TEXT,
+      converted_client_id INTEGER REFERENCES clients(id) ON DELETE SET NULL,
+      converted_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(kind, norm));
+    CREATE INDEX IF NOT EXISTS idx_prosp_kind ON prospects(kind, converted_client_id);
+    CREATE TABLE IF NOT EXISTS prospect_contacts(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      prospect_id INTEGER NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+      sort INTEGER NOT NULL DEFAULT 0,
+      name TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT '', phone TEXT NOT NULL DEFAULT '', email TEXT NOT NULL DEFAULT '');
+    CREATE TABLE IF NOT EXISTS prospect_log(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      prospect_id INTEGER NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+      at TEXT NOT NULL,
+      via TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      by_user TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')));
+    CREATE INDEX IF NOT EXISTS idx_plog ON prospect_log(prospect_id);`);
+    ['contact_name', 'phone', 'email'].forEach(c => addCol('clients', c, "TEXT NOT NULL DEFAULT ''"));
   })();
   db.exec('PRAGMA user_version = ' + SCHEMA_VERSION);
 }

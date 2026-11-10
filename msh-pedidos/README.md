@@ -53,3 +53,11 @@ La base de datos se actualiza sola al arrancar y antes de migrar guarda una copi
 - **Exportar a FactuSOL**: botón en el pedido que descarga un zip con FAC.xlsx (cabecera de la factura) y LFA.xlsx (líneas). Códigos de artículo automáticos y editables (PRD, PCK, ACB; LIBRE para líneas libres). Numeración desde Ajustes (siguiente: 1-000207). Packs: una línea con el precio del pack y sus prendas a 0 €.
 - **Ajustes**: datos de la empresa, serie y siguiente número de factura, forma de pago, y descarga del listado de códigos de artículo.
 - **Clientes**: código de cliente de FactuSOL, NIF y dirección.
+
+## Novedades v5
+- **Comercial** (nueva pestaña) con dos listas, **Clubes** y **Empresas**: filtro por zona y semáforo (rojo = sin contactar, amarillo = contactado / negociando), buscador y casilla «Contactado».
+- **Ficha** con hasta 3 personas de contacto (nombre, cargo, teléfono, correo), notas e **historial de contactos** (fecha, medio y observaciones; al anotar el primero pasa a amarillo).
+- **Importar Excel o CSV**: lee la primera hoja (Zona, Modalidad, Club/Empresa, Municipio, CP, Dirección, Teléfonos, Email, Presidente, Otro contacto, Web…); las demás columnas van a notas. Lo que ya existe no se duplica ni se pisa: solo se rellenan los huecos, y se conservan estado, contactos e historial.
+- **Pasar a cliente** (verde): pide nombre, NIF/CIF, dirección, CP, población y provincia (y el código de FactuSOL si existe), exige confirmar, crea el cliente y retira la ficha de Comercial; el historial queda en la ficha del cliente.
+- **Pedidos e Histórico**: columnas Total y Total con IVA a simple vista, y suma de los pedidos mostrados.
+- Clientes: persona de contacto, teléfono y correo.

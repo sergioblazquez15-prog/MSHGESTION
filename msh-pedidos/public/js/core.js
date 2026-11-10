@@ -90,6 +90,7 @@ const IC = {
   clients: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 3-6 6.5-6s6.5 2.4 6.5 6"/><path d="M16 4.7a3.5 3.5 0 0 1 0 6.6M18.5 14.3c1.9.8 3 2.7 3 5.7"/>',
   catalog: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/>',
   prod: '<path d="M3.5 20.5V9l6 4V9l6 4V4.5h5v16h-17z"/>',
+  comercial: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c0-3.2 2.4-5 5.5-5s5.5 1.8 5.5 5"/><path d="M16 6.5l1.2 1.2L20 5"/>',
   tasks: '<rect x="4" y="4" width="16" height="16" rx="5"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/>',
   stats: '<path d="M4 20.5h16"/><rect x="5" y="11" width="3.5" height="7" rx="1"/><rect x="10.3" y="6" width="3.5" height="12" rx="1"/><rect x="15.6" y="9" width="3.5" height="9" rx="1"/>',
   phases: '<rect x="3.5" y="5" width="17" height="15.5" rx="4"/><path d="M8 3v4M16 3v4M3.5 10.5h17"/>',
@@ -98,7 +99,7 @@ const IC = {
 const ico = k => `<svg viewBox="0 0 24 24" aria-hidden="true">${IC[k]}</svg>`;
 
 /* ===== arranque, acceso y navegación ===== */
-const ADMIN_NAV = [['orders', 'Pedidos'], ['tasks', 'Tareas'], ['hist', 'Histórico'], ['new', 'Nuevo'], ['clients', 'Clientes'], ['catalog', 'Catálogo'], ['prod', 'Producción'], ['stats', 'Informes'], ['phases', 'Plazos'], ['settings', 'Ajustes']];
+const ADMIN_NAV = [['orders', 'Pedidos'], ['tasks', 'Tareas'], ['hist', 'Histórico'], ['new', 'Nuevo'], ['comercial', 'Comercial'], ['clients', 'Clientes'], ['catalog', 'Catálogo'], ['prod', 'Producción'], ['stats', 'Informes'], ['phases', 'Plazos'], ['settings', 'Ajustes']];
 const CLIENT_NAV = [['new', 'Nuevo pedido'], ['mine', 'Mis pedidos']];
 const NAV_ALIAS = { detail: 'orders', edit: 'orders', client: 'clients' };
 

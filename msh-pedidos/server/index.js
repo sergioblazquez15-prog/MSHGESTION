@@ -354,12 +354,12 @@ app.put('/api/clients/:id', auth.requireAdmin, (req, res) => {
   const c = db.prepare('SELECT * FROM clients WHERE id=?').get(req.params.id);
   if (!c) throw bad('Cliente no encontrado', 404);
   const b = req.body;
-  db.prepare('UPDATE clients SET name=?,color=?,allow_packs=?,allow_products=?,allow_free=?,active=?,can_order=?,factusol_code=?,tax_id=?,address=?,postal_code=?,city=?,province=? WHERE id=?').run(
+  db.prepare('UPDATE clients SET name=?,color=?,allow_packs=?,allow_products=?,allow_free=?,active=?,can_order=?,factusol_code=?,tax_id=?,address=?,postal_code=?,city=?,province=?,contact_name=?,phone=?,email=? WHERE id=?').run(
     clean(b.name, 120) || c.name, isHex(b.color) ? b.color : c.color,
     b.allow_packs ? 1 : 0, b.allow_products ? 1 : 0, b.allow_free ? 1 : 0, b.active === false ? 0 : 1,
     b.can_order === undefined ? c.can_order : (b.can_order ? 1 : 0),
     b.factusol_code === undefined ? c.factusol_code : clean(b.factusol_code, 6).replace(/\D/g, ''),
-    ...['tax_id', 'address', 'postal_code', 'city', 'province'].map(k => b[k] === undefined ? c[k] : clean(b[k], k === 'address' ? 100 : 40)),
+    ...['tax_id', 'address', 'postal_code', 'city', 'province', 'contact_name', 'phone', 'email'].map(k => b[k] === undefined ? c[k] : clean(b[k], k === 'address' || k === 'email' ? 100 : 40)),
     c.id
   );
   res.json(db.prepare('SELECT * FROM clients WHERE id=?').get(c.id));
@@ -1085,6 +1085,184 @@ function statsData(q) {
   };
 }
 app.get('/api/stats', auth.requireAdmin, (req, res) => res.json(statsData(req.query)));
+
+/* ---------- comercial: clubes y empresas ---------- */
+const { readXlsx, readCsv } = require('./xlsxread');
+const normName = s => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+const KINDS = ['club', 'empresa'];
+const VIAS = ['llamada', 'email', 'whatsapp', 'visita', 'reunión', 'otro'];
+const importUpload = uploader({
+  dir: path.join(DATA, 'uploads'), limit: 10 * 1024 * 1024, accept: /\.(xlsx|csv)$/i, ext: n => path.extname(n).toLowerCase()
+});
+function prospectOut(p, full) {
+  const contacts = db.prepare('SELECT id,name,role,phone,email FROM prospect_contacts WHERE prospect_id=? ORDER BY sort,id').all(p.id);
+  const out = { ...p, contacts, log_count: db.prepare('SELECT COUNT(*) AS n FROM prospect_log WHERE prospect_id=?').get(p.id).n };
+  if (full) out.log = db.prepare('SELECT id,at,via,notes,by_user FROM prospect_log WHERE prospect_id=? ORDER BY at DESC,id DESC').all(p.id);
+  delete out.norm;
+  return out;
+}
+const PFIELDS = ['zone', 'category', 'city', 'address', 'postal_code', 'phone', 'email', 'web', 'notes'];
+function saveContacts(pid, list) {
+  const items = (Array.isArray(list) ? list : []).map(c => ({ name: clean(c.name, 80), role: clean(c.role, 60), phone: clean(c.phone, 40), email: clean(c.email, 100) })).filter(c => c.name || c.phone || c.email);
+  if (items.length > 3) throw bad('Como máximo 3 contactos por ficha');
+  db.prepare('DELETE FROM prospect_contacts WHERE prospect_id=?').run(pid);
+  const ins = db.prepare('INSERT INTO prospect_contacts(prospect_id,sort,name,role,phone,email) VALUES (?,?,?,?,?,?)');
+  items.forEach((c, i) => ins.run(pid, i, c.name, c.role, c.phone, c.email));
+}
+app.get('/api/prospects', auth.requireAdmin, (req, res) => {
+  const kind = KINDS.includes(req.query.kind) ? req.query.kind : 'club';
+  const rows = db.prepare('SELECT * FROM prospects WHERE kind=? AND converted_client_id IS NULL ORDER BY name COLLATE NOCASE').all(kind);
+  res.json(rows.map(p => prospectOut(p, false)));
+});
+app.post('/api/prospects', auth.requireAdmin, (req, res) => {
+  const b = req.body || {};
+  const kind = KINDS.includes(b.kind) ? b.kind : null, name = clean(b.name, 150);
+  if (!kind) throw bad('Indica si es un club o una empresa');
+  if (!name) throw bad('Escribe el nombre');
+  if (db.prepare('SELECT 1 FROM prospects WHERE kind=? AND norm=?').get(kind, normName(name))) throw bad('Ya existe «' + name + '» en la lista');
+  const id = db.prepare('INSERT INTO prospects(kind,name,norm,zone,category,city,address,postal_code,phone,email,web,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(kind, name, normName(name), ...PFIELDS.map(k => clean(b[k], k === 'notes' ? 1000 : 150))).lastInsertRowid;
+  if (b.contacts) saveContacts(id, b.contacts);
+  res.json(prospectOut(db.prepare('SELECT * FROM prospects WHERE id=?').get(id), true));
+});
+const getProspect = id => { const p = db.prepare('SELECT * FROM prospects WHERE id=?').get(id); if (!p) throw bad('No encontrado', 404); return p; };
+app.get('/api/prospects/:id', auth.requireAdmin, (req, res) => res.json(prospectOut(getProspect(req.params.id), true)));
+app.put('/api/prospects/:id', auth.requireAdmin, (req, res) => {
+  const p = getProspect(req.params.id), b = req.body || {};
+  if (p.converted_client_id) throw bad('Ya es cliente');
+  const name = b.name === undefined ? p.name : clean(b.name, 150);
+  if (!name) throw bad('Escribe el nombre');
+  const norm = normName(name);
+  if (norm !== p.norm && db.prepare('SELECT 1 FROM prospects WHERE kind=? AND norm=? AND id<>?').get(p.kind, norm, p.id)) throw bad('Ya existe «' + name + '» en la lista');
+  const status = b.status === 'rojo' || b.status === 'amarillo' ? b.status : p.status;
+  db.transaction(() => {
+    db.prepare('UPDATE prospects SET name=?,norm=?,status=?,' + PFIELDS.map(k => k + '=?').join(',') + ' WHERE id=?')
+      .run(name, norm, status, ...PFIELDS.map(k => b[k] === undefined ? p[k] : clean(b[k], k === 'notes' ? 1000 : 150)), p.id);
+    if (b.contacts !== undefined) saveContacts(p.id, b.contacts);
+  })();
+  res.json(prospectOut(getProspect(p.id), true));
+});
+app.delete('/api/prospects/:id', auth.requireAdmin, (req, res) => {
+  const p = getProspect(req.params.id);
+  db.prepare('DELETE FROM prospects WHERE id=?').run(p.id);
+  res.json({ ok: true });
+});
+app.post('/api/prospects/:id/log', auth.requireAdmin, (req, res) => {
+  const p = getProspect(req.params.id), b = req.body || {};
+  if (p.converted_client_id) throw bad('Ya es cliente');
+  const at = isDate(b.at) ? b.at : todayStr(), notes = clean(b.notes, 1000), via = VIAS.includes(b.via) ? b.via : 'otro';
+  db.transaction(() => {
+    db.prepare('INSERT INTO prospect_log(prospect_id,at,via,notes,by_user) VALUES (?,?,?,?,?)').run(p.id, at, via, notes, req.user.name || req.user.email);
+    const last = db.prepare('SELECT MAX(at) AS m FROM prospect_log WHERE prospect_id=?').get(p.id).m;
+    db.prepare("UPDATE prospects SET last_contact=?, status='amarillo' WHERE id=?").run(last, p.id);   // contactado → pasa a amarillo
+  })();
+  res.json(prospectOut(getProspect(p.id), true));
+});
+app.delete('/api/prospects/:id/log/:lid', auth.requireAdmin, (req, res) => {
+  const p = getProspect(req.params.id);
+  db.prepare('DELETE FROM prospect_log WHERE id=? AND prospect_id=?').run(req.params.lid, p.id);
+  db.prepare('UPDATE prospects SET last_contact=(SELECT MAX(at) FROM prospect_log WHERE prospect_id=?) WHERE id=?').run(p.id, p.id);
+  res.json(prospectOut(getProspect(p.id), true));
+});
+// pasar a cliente: pide los datos, crea el cliente y retira la ficha de Comercial (el historial se conserva en el cliente)
+app.post('/api/prospects/:id/convert', auth.requireAdmin, (req, res) => {
+  const p = getProspect(req.params.id), b = req.body || {};
+  if (p.converted_client_id) throw bad('Ya es cliente');
+  const d = { name: clean(b.name, 120), tax_id: clean(b.tax_id, 18), address: clean(b.address, 100), postal_code: clean(b.postal_code, 10), city: clean(b.city, 40), province: clean(b.province, 40) };
+  const missing = [['name', 'el nombre'], ['tax_id', 'el NIF/CIF'], ['address', 'la dirección'], ['postal_code', 'el código postal'], ['city', 'la población'], ['province', 'la provincia']].filter(([k]) => !d[k]).map(x => x[1]);
+  if (missing.length) throw bad('Faltan datos para pasarlo a cliente: ' + missing.join(', '));
+  if (!b.confirm) throw bad('Falta confirmar el traspaso');
+  const fcode = clean(b.factusol_code, 6).replace(/\D/g, '');
+  const cid = db.transaction(() => {
+    let slug = slugify(d.name), base = slug, i = 2;
+    while (db.prepare('SELECT 1 FROM clients WHERE slug=?').get(slug)) slug = base + '-' + i++;
+    const so = (db.prepare('SELECT MAX(sort_order) AS m FROM clients').get().m || 0) + 1;
+    const c0 = db.prepare('SELECT name,phone,email FROM prospect_contacts WHERE prospect_id=? ORDER BY sort,id LIMIT 1').get(p.id) || {};
+    const id = db.prepare('INSERT INTO clients(name,slug,color,allow_packs,allow_products,allow_free,can_order,sort_order,factusol_code,tax_id,address,postal_code,city,province,contact_name,phone,email) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(d.name, slug, '#d4af37', 1, 0, 1, 0, so, fcode, d.tax_id, d.address, d.postal_code, d.city, d.province,
+        clean(b.contact_name, 80) || c0.name || '', clean(b.phone, 40) || c0.phone || p.phone, clean(b.email, 100) || c0.email || p.email).lastInsertRowid;
+    db.prepare('INSERT INTO prospect_log(prospect_id,at,via,notes,by_user) VALUES (?,?,?,?,?)').run(p.id, todayStr(), 'otro', 'Pasado a cliente', req.user.name || req.user.email);
+    db.prepare('UPDATE prospects SET converted_client_id=?, converted_at=? WHERE id=?').run(id, todayStr(), p.id);
+    return id;
+  })();
+  res.json({ client_id: cid });
+});
+app.get('/api/clients/:id/commercial', auth.requireAdmin, (req, res) => {
+  const p = db.prepare('SELECT * FROM prospects WHERE converted_client_id=?').get(req.params.id);
+  res.json(p ? { prospect: { name: p.name, kind: p.kind, converted_at: p.converted_at }, log: db.prepare('SELECT at,via,notes,by_user FROM prospect_log WHERE prospect_id=? ORDER BY at DESC,id DESC').all(p.id) } : null);
+});
+
+// importar un Excel/CSV: añade los nuevos y completa solo los campos vacíos de los que ya existen
+const HEAD_MAP = [
+  ['name', /^(nombre|club|empresa|entidad|razon social|denominacion|nombre del club|nombre de la empresa)\b/],
+  ['zone', /^zona\b/], ['category', /^(deporte|sector|categoria|actividad|tipo|federacion|modalidad)\b/],
+  ['city', /^(ciudad|localidad|municipio|poblacion)\b/], ['address', /^(direccion|domicilio)\b/], ['postal_code', /^(cp|c p|codigo postal)\b/],
+  ['phone', /^(telefonos?|tfnos?|tlfs?|tel|movil|moviles)\b/], ['email', /^(e mail|email|emails|correo|correos|mail)\b/],
+  ['web', /^(web|pagina|url|sitio)\b/], ['notes', /^(observaciones|notas|comentarios|comentario)\b/]
+];
+// columnas con personas de contacto (el cargo se toma del propio título de la columna)
+const CONTACT_COLS = [[/^presidente\b/, 'Presidente'], [/^secretari[oa]\b/, 'Secretario'], [/^(director|coordinador|responsable)\b/, ''], [/^(persona de contacto|persona|contacto|nombre contacto|nombre del contacto|otro contacto|otros contactos)\b/, '']];
+app.post('/api/prospects/import', auth.requireAdmin, importUpload.single('file'), (req, res) => {
+  const kind = KINDS.includes(req.body.kind) ? req.body.kind : null;
+  if (!req.file) throw bad('Sube un archivo Excel (.xlsx) o CSV');
+  const file = path.join(DATA, 'uploads', req.file.filename);
+  let rows;
+  try {
+    const buf = fs.readFileSync(file);
+    rows = /\.csv$/i.test(req.file.filename) ? readCsv(buf.toString('utf8')) : readXlsx(buf);
+  } finally { fs.unlink(file, () => {}); }
+  if (!kind) throw bad('Indica si es la lista de clubes o la de empresas');
+  // fila de cabeceras: la primera que tenga una columna de nombre
+  let hi = -1, map = {}, ccols = [], extras = [];
+  for (let i = 0; i < Math.min(rows.length, 15) && hi < 0; i++) {
+    const m = {}, cc = [];
+    (rows[i] || []).forEach((h, ci) => {
+      const n = normName(h); if (!n) return;
+      const k = HEAD_MAP.find(([key, re]) => m[key] === undefined && re.test(n));
+      if (k) { m[k[0]] = ci; return; }
+      const c = CONTACT_COLS.find(([re]) => re.test(n));
+      if (c) cc.push({ ci, role: c[1] });
+    });
+    if (m.name !== undefined) { hi = i; map = m; ccols = cc; extras = (rows[i] || []).map((h, ci) => ({ ci, h: clean(String(h).replace(/\s*\(.*$/, ''), 40) })).filter(x => x.h && !Object.values(m).includes(x.ci) && !cc.some(c => c.ci === x.ci)); }
+  }
+  if (hi < 0) throw bad('No encuentro la columna del nombre. La primera fila debe tener cabeceras como Nombre (o Club / Empresa), Zona, Municipio, Teléfono, Email, Presidente…');
+  const clientNorms = new Set(db.prepare('SELECT name FROM clients').all().map(c => normName(c.name)));
+  const stats = { added: 0, updated: 0, unchanged: 0, already_client: 0, empty: 0 };
+  const insC = db.prepare('INSERT INTO prospect_contacts(prospect_id,sort,name,role,phone,email) VALUES (?,?,?,?,?,?)');
+  db.transaction(() => {
+    for (let i = hi + 1; i < rows.length; i++) {
+      const r = rows[i] || [], g = k => map[k] === undefined ? '' : clean(r[map[k]], k === 'notes' ? 1000 : 150);
+      const name = g('name');
+      if (!name) { if (r.some(Boolean)) stats.empty++; continue; }
+      const norm = normName(name);
+      if (clientNorms.has(norm)) { stats.already_client++; continue; }
+      const data = {}; PFIELDS.forEach(k => { data[k] = g(k); });
+      // el resto de columnas (colores, nº de equipos, estado…) se guardan en las notas
+      const ex_notes = extras.map(x => r[x.ci] ? x.h + ': ' + clean(r[x.ci], 150) : '').filter(Boolean).join(' · ');
+      data.notes = clean([data.notes, ex_notes].filter(Boolean).join(' · '), 1000);
+      const firstPhone = (data.phone.split(/\s*[-–\/;,]\s*/)[0] || '').trim();
+      const contacts = ccols.map(c => ({ name: clean(r[c.ci], 80), role: c.role, phone: '', email: '' })).filter(c => c.name && normName(c.name) !== norm);
+      if (contacts.length) { contacts[0].phone = firstPhone; contacts[0].email = data.email.split(/[;,\s]+/)[0] || ''; }
+      const ex = db.prepare('SELECT * FROM prospects WHERE kind=? AND norm=?').get(kind, norm);
+      if (!ex) {
+        const id = db.prepare('INSERT INTO prospects(kind,name,norm,zone,category,city,address,postal_code,phone,email,web,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').run(kind, name, norm, ...PFIELDS.map(k => data[k])).lastInsertRowid;
+        contacts.slice(0, 3).forEach((c, j) => insC.run(id, j, c.name, c.role, c.phone, c.email));
+        stats.added++;
+      } else if (ex.converted_client_id) { stats.already_client++; }
+      else {
+        // se mantiene lo que ya tenías; solo se rellenan los huecos
+        const sets = PFIELDS.filter(k => !ex[k] && data[k]);
+        let changed = sets.length > 0;
+        if (sets.length) db.prepare('UPDATE prospects SET ' + sets.map(k => k + '=?').join(',') + ' WHERE id=?').run(...sets.map(k => data[k]), ex.id);
+        const cs = db.prepare('SELECT name FROM prospect_contacts WHERE prospect_id=?').all(ex.id);
+        let n = cs.length;
+        contacts.forEach(c => { if (n < 3 && !cs.some(x => normName(x.name) === normName(c.name))) { insC.run(ex.id, n++, c.name, c.role, c.phone, c.email); changed = true; } });
+        stats[changed ? 'updated' : 'unchanged']++;
+      }
+    }
+  })();
+  res.json({ ...stats, columns: Object.keys(map), rows: rows.length - hi - 1 });
+});
 
 /* ---------- ajustes ---------- */
 app.get('/api/settings', auth.requireAdmin, (req, res) => {

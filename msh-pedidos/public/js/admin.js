@@ -14,6 +14,7 @@ const ADMIN_VIEWS = {
   async prod() { return A.production(); },
   async stats() { return ST.view(); },
   async tasks() { return TK.view(); },
+  async comercial(rest) { return CM.view(rest); },
   async phases() { return A.template(); },
   async settings() { return A.settings(); }
 };
@@ -60,12 +61,12 @@ A.redrawList = function () { $('main').innerHTML = A.listHTML(); };
 A.tableHTML = function () {
   const rows = A.visible();
   if (!rows.length) return `<div class="empty">${A.orders.length ? 'No hay pedidos con este filtro.' : 'Todavía no hay pedidos. Cuando un cliente envíe uno, aparecerá aquí.'}</div>`;
-  return `<table><thead><tr><th>Pedido</th><th>Cliente</th><th>Fecha</th><th>Fase</th><th>Entrega estimada</th><th>Estado</th><th>Facturación</th></tr></thead><tbody>
+  return `<div style="overflow-x:auto"><table><thead><tr><th>Pedido</th><th>Cliente</th><th>Fecha</th><th>Fase</th><th>Entrega estimada</th><th>Estado</th><th class="r">Total</th><th class="r">Total con IVA</th><th>Facturación</th></tr></thead><tbody>
   ${rows.map(o => `<tr class="${diffDays(o.est_delivery, S.today) <= 7 ? 'urgent' : ''}" style="cursor:pointer" onclick="go('orders/${o.id}')">
    <td><b>#${o.number}</b>${o.title ? ' · ' + esc(o.title) : ''}<br><span class="mini">${o.units} uds</span>${o.origin === 'admin' ? ' <span class="tag adm">MSH</span>' : ''}</td>
-   <td><div class="cc">${shieldHTML(o)}${esc(o.client_name)}</div></td><td>${fmt(o.order_date)}</td>
+   <td><div class="cc">${shieldHTML(o)}${esc(o.client_name)}</div></td><td style="white-space:nowrap">${fmt(o.order_date)}</td>
    <td style="min-width:170px"><div class="mini" style="margin-bottom:5px">${esc(phName(o))}</div>${seg(o)}</td>
-   <td>${prioPill(o)}</td><td><span class="st ${stKey(o.status)}">${esc(o.status)}</span></td><td>${A.billPill(o)}</td></tr>`).join('')}</tbody></table>`;
+   <td>${prioPill(o)}</td><td><span class="st ${stKey(o.status)}">${esc(o.status)}</span></td>${A.amountCells(o)}<td>${A.billPill(o, true)}</td></tr>`).join('')}</tbody>${A.sumRow(rows, 6)}</table></div>`;
 };
 
 /* ---------- albaranes de entrega ---------- */
@@ -132,9 +133,17 @@ A.fsExport = async () => safe(async () => {
 });
 A.fsRelease = async () => { if (!confirm('¿Anular el número reservado de este pedido? Solo se libera si fue el último.')) return; await safe(async () => { const r = await api('DELETE', `/api/orders/${A.o.id}/factusol`); toast(r.released ? 'Número liberado' : 'Anulado (el número no se reutiliza porque ya hay otro después)'); A.reload(); }); };
 
-A.billPill = o => o.invoiced
-  ? `<span class="bill ok">Facturado${o.invoice_number ? ' · ' + esc(o.invoice_number) : ''}</span>`
-  : `<span class="bill pend">Pendiente de facturar</span>`;
+A.sumRow = (rows, span) => {
+  const t = rows.reduce((a, o) => a + (o.total || 0), 0), ti = rows.reduce((a, o) => a + (o.total_iva || 0), 0);
+  return `<tfoot><tr><td colspan="${span}" style="text-align:right"><b>Suma de los ${rows.length} pedidos mostrados</b></td><td class="r" style="white-space:nowrap">${money(t)}</td><td class="r" style="white-space:nowrap"><b>${money(ti)}</b></td><td colspan="2"></td></tr></tfoot>`;
+};
+A.amountCells = o => {
+  const warn = o.unpriced ? ` <span class="mini" title="${o.unpriced} línea(s) sin precio: el total no es definitivo" style="color:var(--accent)">*</span>` : '';
+  return `<td class="r" style="white-space:nowrap">${o.total == null ? '–' : money(o.total) + warn}</td><td class="r" style="white-space:nowrap"><b>${o.total_iva == null ? '–' : money(o.total_iva)}</b></td>`;
+};
+A.billPill = (o, short) => o.invoiced
+  ? `<span class="bill ok">Facturado${!short && o.invoice_number ? ' · ' + esc(o.invoice_number) : ''}</span>`
+  : `<span class="bill pend">${short ? 'Sin facturar' : 'Pendiente de facturar'}</span>`;
 
 /* ---------- histórico ---------- */
 A.hist = async function () {
@@ -157,10 +166,10 @@ A.histRedraw = function () { $('htbl').innerHTML = A.histTable(); };
 A.histTable = function () {
   const rows = A.histRows();
   if (!rows.length) return '<div class="empty">No hay pedidos entregados con este filtro.</div>';
-  return `<table><thead><tr><th>Pedido</th><th>Cliente</th><th>Fecha</th><th>Entregado</th><th>Facturación</th><th>Documentos</th></tr></thead><tbody>
+  return `<div style="overflow-x:auto"><table><thead><tr><th>Pedido</th><th>Cliente</th><th>Fecha</th><th>Entregado</th><th class="r">Total</th><th class="r">Total con IVA</th><th>Facturación</th><th>Documentos</th></tr></thead><tbody>
   ${rows.map(o => `<tr style="cursor:pointer" onclick="go('orders/${o.id}')"><td><b>#${o.number}</b>${o.title ? ' · ' + esc(o.title) : ''} <span class="mini">${o.units} uds</span></td>
-   <td><div class="cc">${shieldHTML(o)}${esc(o.client_name)}</div></td><td>${fmt(o.order_date)}</td><td>${fmt(o.delivered_at)}</td><td>${A.billPill(o)}</td>
-   <td>${['albaran', 'factura'].map(k => `<span class="pdf ${o.docs.some(d => d.kind === k) ? 'ok' : ''}">${k === 'albaran' ? 'Albarán' : 'Factura'}</span>`).join(' ')}</td></tr>`).join('')}</tbody></table>`;
+   <td><div class="cc">${shieldHTML(o)}${esc(o.client_name)}</div></td><td>${fmt(o.order_date)}</td><td>${fmt(o.delivered_at)}</td>${A.amountCells(o)}<td>${A.billPill(o, true)}</td>
+   <td>${['albaran', 'factura'].map(k => `<span class="pdf ${o.docs.some(d => d.kind === k) ? 'ok' : ''}">${k === 'albaran' ? 'Albarán' : 'Factura'}</span>`).join(' ')}</td></tr>`).join('')}</tbody>${A.sumRow(rows, 4)}</table></div>`;
 };
 
 /* ---------- ficha de pedido ---------- */
@@ -353,7 +362,7 @@ A.clientEdit = async function (id) {
   await loadClients();
   const c = A.clients.find(x => x.id === id);
   if (!c) throw new Error('Cliente no encontrado');
-  const users = await api('GET', `/api/clients/${id}/users`);
+  const [users, com] = await Promise.all([api('GET', `/api/clients/${id}/users`), api('GET', `/api/clients/${id}/commercial`)]);
   A.c = c;
   return `<span class="crumb" onclick="go('clients')">← Clientes</span>
   <div class="row" style="gap:16px;margin-bottom:22px">${crestHTML(c, true)}<h1>${esc(c.name)}</h1></div>
@@ -377,8 +386,12 @@ A.clientEdit = async function (id) {
     <div class="field"><label>Código postal</label><input type="text" id="c-postal" value="${esc(c.postal_code)}" style="width:140px"></div>
     <div class="field"><label>Población</label><input type="text" id="c-city" value="${esc(c.city)}"></div>
     <div class="field"><label>Provincia</label><input type="text" id="c-prov" value="${esc(c.province)}"></div>
+    <div class="field"><label>Persona de contacto</label><input type="text" id="c-cname" value="${esc(c.contact_name)}"></div>
+    <div class="field"><label>Teléfono</label><input type="text" id="c-phone" value="${esc(c.phone)}"></div>
+    <div class="field"><label>Correo</label><input type="text" id="c-mail" value="${esc(c.email)}"></div>
     <div class="btnrow"><button class="btn amber" onclick="A.saveClient()">Guardar</button><button class="btn ghost" onclick="go('catalog/${c.id}')">Editar su catálogo</button><button class="btn ghost" onclick="go('new/${c.id}')">Crear pedido</button></div></div></div>
    ${c.total_orders ? '' : `<div class="panel"><div class="ph"><h2>Zona delicada</h2></div><div class="pb"><button class="btn danger sm" onclick="A.delClient()">Borrar cliente</button><p class="hint">Solo se puede borrar un cliente sin pedidos.</p></div></div>`}</div>
+  ${com ? `<div class="panel"><div class="ph"><h2>Historial comercial</h2><span class="mini">Antes de ser cliente</span></div><div class="pb">${com.log.map(l => `<div class="logline"><span class="t">${esc(fmt(l.at))}</span><span><b>${esc(l.via)}</b>${l.notes ? ' · ' + esc(l.notes) : ''}${l.by_user ? ` <span class="mini">· ${esc(l.by_user)}</span>` : ''}</span></div>`).join('') || '<div class="mini">Sin contactos anotados.</div>'}</div></div>` : ''}
   <div class="panel"><div class="ph"><h2>Usuarios con acceso</h2></div><div class="pb">
    ${users.map(u => `<div class="sumrow"><span>${esc(u.email)}<br><span class="mini">${esc(u.name || '')} · ${u.active ? '<span class="pill-on">Activo</span>' : '<span class="pill-off">Desactivado</span>'}</span></span>
      <span class="btnrow"><button class="x" onclick="A.userPass(${u.id})">Nueva contraseña</button><button class="x" onclick="A.userToggle(${u.id},${u.active ? 0 : 1})">${u.active ? 'Desactivar' : 'Activar'}</button><button class="x" onclick="A.userDel(${u.id})">Borrar</button></span></div>`).join('') || '<div class="mini" style="margin-bottom:10px">Todavía no hay usuarios.</div>'}
@@ -389,7 +402,7 @@ A.clientEdit = async function (id) {
    <button class="btn amber" onclick="A.addUser()">Crear usuario</button></div></div></div>`;
 };
 A.saveClient = async () => safe(async () => {
-  await api('PUT', '/api/clients/' + A.c.id, { name: $('c-name').value, color: $('c-color').value, allow_packs: $('c-packs').checked, allow_products: $('c-prods').checked, allow_free: $('c-free').checked, can_order: $('c-order').checked, active: $('c-active').checked, factusol_code: $('c-fcode').value, tax_id: $('c-tax').value, address: $('c-addr').value, postal_code: $('c-postal').value, city: $('c-city').value, province: $('c-prov').value });
+  await api('PUT', '/api/clients/' + A.c.id, { name: $('c-name').value, color: $('c-color').value, allow_packs: $('c-packs').checked, allow_products: $('c-prods').checked, allow_free: $('c-free').checked, can_order: $('c-order').checked, active: $('c-active').checked, factusol_code: $('c-fcode').value, tax_id: $('c-tax').value, address: $('c-addr').value, postal_code: $('c-postal').value, city: $('c-city').value, province: $('c-prov').value, contact_name: $('c-cname').value, phone: $('c-phone').value, email: $('c-mail').value });
   toast('Cliente guardado'); A.reload();
 });
 A.crest = async () => {
