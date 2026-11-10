@@ -128,7 +128,7 @@ async function send(to, subject, html) {
 }
 
 function layout(title, bodyHtml, linkUrl) {
-  const brand = getSetting('brand_name', 'MSH Madrid');
+  const brand = getSetting('brand_name', 'MSH gestión');
   return `<div style="font-family:Arial,Helvetica,sans-serif;background:#0a0a0a;padding:24px">
   <div style="max-width:520px;margin:0 auto;background:#121212;border:1px solid #2a2a2a;border-radius:16px;padding:28px;color:#ffffff">
     <div style="color:#d4af37;font-size:13px;margin-bottom:10px">${esc(brand)}</div>

@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS email_log(
 
 
 /* ---------- Migraciones (conservan todos los datos existentes) ---------- */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const ver = db.prepare('PRAGMA user_version').get().user_version;
 if (ver < SCHEMA_VERSION) {
   if (existed && ver < SCHEMA_VERSION) {
@@ -229,6 +229,58 @@ if (ver < SCHEMA_VERSION) {
         DROP TABLE documents;
         ALTER TABLE documents_new RENAME TO documents;`);
     }
+    // v4: facturación, albaranes de entrega parciales, códigos FactuSOL
+    ['factusol_code','tax_id','address','postal_code','city','province'].forEach(c => addCol('clients', c, "TEXT NOT NULL DEFAULT ''"));
+    ['products','packs','finishes'].forEach(t => addCol(t, 'code', "TEXT NOT NULL DEFAULT ''"));
+    addCol('orders', 'invoiced', 'INTEGER NOT NULL DEFAULT 0');
+    addCol('orders', 'invoiced_at', 'TEXT');
+    addCol('orders', 'invoice_ref', "TEXT NOT NULL DEFAULT ''");
+    db.exec(`CREATE TABLE IF NOT EXISTS deliveries(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      year INTEGER NOT NULL, seq INTEGER NOT NULL,
+      delivered_at TEXT NOT NULL,
+      delivered_by TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(year, seq));
+    CREATE INDEX IF NOT EXISTS idx_deliv_order ON deliveries(order_id);
+    CREATE TABLE IF NOT EXISTS delivery_lines(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      delivery_id INTEGER NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+      line_key TEXT NOT NULL,
+      kind TEXT NOT NULL, pack_name TEXT, group_no INTEGER NOT NULL DEFAULT 0,
+      product_name TEXT NOT NULL, size TEXT, color TEXT,
+      detail TEXT NOT NULL DEFAULT '',
+      qty INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS idx_dl_deliv ON delivery_lines(delivery_id);
+    CREATE TABLE IF NOT EXISTS invoices(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      doc_type INTEGER NOT NULL DEFAULT 1,
+      number INTEGER NOT NULL,
+      invoice_date TEXT NOT NULL,
+      base REAL NOT NULL DEFAULT 0, iva REAL NOT NULL DEFAULT 0, total REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_by TEXT NOT NULL DEFAULT '',
+      UNIQUE(doc_type, number));
+    CREATE INDEX IF NOT EXISTS idx_inv_order ON invoices(order_id);`);
+    // códigos de artículo automáticos para lo que ya existe en el catálogo
+    [['finishes', 'ACB'], ['products', 'PRD'], ['packs', 'PCK']].forEach(([t, pre]) => {
+      let n = (db.prepare("SELECT value FROM settings WHERE key=?").get('codeseq_' + pre) || {}).value; n = parseInt(n, 10) || 0;
+      db.prepare("SELECT id FROM " + t + " WHERE code='' ORDER BY id").all().forEach(r => {
+        n++; db.prepare('UPDATE ' + t + ' SET code=? WHERE id=?').run(pre + String(n).padStart(5, '0'), r.id);
+      });
+      db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run('codeseq_' + pre, String(n));
+    });
+    // pedidos que ya tienen factura subida pasan a facturados
+    db.exec(`UPDATE orders SET invoiced=1, invoiced_at=COALESCE(invoiced_at,(SELECT MIN(uploaded_at) FROM documents d WHERE d.order_id=orders.id AND d.kind='factura'))
+             WHERE invoiced=0 AND EXISTS(SELECT 1 FROM documents d WHERE d.order_id=orders.id AND d.kind='factura')`);
+    const seed = (k, v) => db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)').run(k, v);
+    seed('company_name', 'MSH MADRID 24 SL'); seed('company_cif', 'B19334150');
+    seed('company_address', 'AVENIDA VALDEARGANDA 4'); seed('company_city', 'ARGANDA DEL REY');
+    seed('company_postal', ''); seed('company_phone', ''); seed('company_email', '');
+    seed('invoice_next', '207'); seed('invoice_doc_type', '1'); seed('invoice_pay_code', '');
   })();
   db.exec('PRAGMA user_version = ' + SCHEMA_VERSION);
 }

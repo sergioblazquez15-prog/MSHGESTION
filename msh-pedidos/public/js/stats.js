@@ -125,6 +125,7 @@ const ST = {
     const tile = (lab, v, sub) => `<div class="kpi"><span>${lab}</span><b>${v}</b>${sub ? `<em>${sub}</em>` : ''}</div>`;
     const warn = k.unpriced ? `<div class="notice" style="margin-bottom:14px">Hay ${k.unpriced} línea(s) sin precio. Los importes solo suman las que lo tienen.</div>` : '';
     return `${warn}<div class="kpis">${tile('Pedidos', this.num(k.orders))}${tile('Unidades', this.num(k.units))}${tile('Importe (sin IVA)', this.eur(k.amount))}${tile('Clientes', this.num(k.clients))}${tile('Importe medio por pedido', this.eur(k.avg_order))}</div>
+    ${this.billing(isStatic)}
     <div class="stgrid">
       <div class="panel"><div class="ph"><h2>${this.isQty() ? 'Unidades' : 'Importe'} por mes</h2><div class="stleg">${d.categories.map((c, i) => `<span><i style="background:${this.col(i)}"></i>${esc(c)}</span>`).join('')}</div></div><div class="pb" style="position:relative" id="st-bars">${this.bars()}<div class="sttip" id="st-tip"></div></div>
         <details class="pb stalt"><summary>Ver como tabla</summary>${this.monthTable()}</details></div>
@@ -132,6 +133,17 @@ const ST = {
     </div>
     <div class="panel"><div class="ph"><h2>Ventas por cliente</h2>${isStatic ? '' : `<div class="row"><input type="search" class="stsearch" placeholder="Buscar cliente…" oninput="ST.tbl.cli.q=this.value;ST.paintTables()"><button class="btn ghost sm" onclick="ST.csv('cli')">Exportar CSV</button></div>`}</div><div class="pb tblwrap" id="st-cli-body">${isStatic ? this.cliTable() : ''}</div></div>
     <div class="panel"><div class="ph"><h2>Ventas por producto</h2>${isStatic ? '' : `<div class="row"><input type="search" class="stsearch" placeholder="Buscar producto…" oninput="ST.tbl.prod.q=this.value;ST.paintTables()"><button class="btn ghost sm" onclick="ST.csv('prod')">Exportar CSV</button></div>`}</div><div class="pb tblwrap" id="st-prod-body">${isStatic ? this.prodTable() : ''}</div></div>`;
+  },
+  billing(isStatic) {
+    const b = this.data.billing; if (!b) return '';
+    const tot = b.invoiced + b.pending, pc = tot ? Math.round(b.invoiced / tot * 100) : 0;
+    const row = c => `<tr><td class="nm">${esc(c.name)}</td><td class="r">${this.eur(c.invoiced)}</td><td class="r"><b>${this.eur(c.pending)}</b></td><td class="r">${c.pending_orders}</td></tr>`;
+    const pend = b.pending_list.slice(0, isStatic ? 25 : 15).map(p => `<tr${isStatic ? '' : ` style="cursor:pointer" onclick="go('orders/${p.id}')"`}><td class="nm">Nº ${p.number}${p.title ? ' · ' + esc(p.title) : ''}</td><td>${esc(p.client)}</td><td>${esc(fmt(p.date))}</td><td class="r">${p.unpriced ? '<span class="mini">sin precio</span> ' : ''}${this.eur(p.amount)}</td></tr>`).join('');
+    return `<div class="panel"><div class="ph"><h2>Facturación</h2><span class="mini">Importes sin IVA</span></div><div class="pb">
+      <div class="kpis" style="grid-template-columns:repeat(3,1fr)"><div class="kpi"><span>Facturado (${b.invoiced_orders} pedidos)</span><b>${this.eur(b.invoiced)}</b></div><div class="kpi" style="border-color:#d4af37"><span>Pendiente de facturar (${b.pending_orders} pedidos)</span><b>${this.eur(b.pending)}</b></div><div class="kpi"><span>Ya facturado del total</span><b>${pc} %</b></div></div>
+      <div style="height:12px;border-radius:999px;background:var(--st-grid);overflow:hidden;margin:2px 0 18px" role="img" aria-label="${pc} % facturado"><div style="height:100%;width:${pc}%;background:#d4af37"></div></div>
+      <div class="stgrid"><div class="tblwrap"><table class="sttable"><thead><tr><th>Cliente</th><th class="r">Facturado</th><th class="r">Pendiente</th><th class="r">Pedidos pend.</th></tr></thead><tbody>${b.by_client.map(row).join('')}</tbody></table></div>
+      <div class="tblwrap"><table class="sttable"><thead><tr><th>Pedido pendiente de facturar</th><th>Cliente</th><th>Fecha</th><th class="r">Importe</th></tr></thead><tbody>${pend || '<tr><td colspan="4" class="mini">Todo facturado.</td></tr>'}</tbody></table></div></div></div></div>`;
   },
   paintTables() {
     const a = $('st-cli-body'), b = $('st-prod-body');

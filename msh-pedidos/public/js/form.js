@@ -99,7 +99,7 @@ const OF = {
           <input type="text" placeholder="Talla" value="${esc(f.size)}" oninput="OF.s.free[${i}].size=this.value">
           <input type="text" placeholder="Color (obligatorio)" value="${esc(f.color)}" oninput="OF.s.free[${i}].color=this.value">
           <input type="number" min="1" value="${f.qty}" onchange="OF.s.free[${i}].qty=Math.max(1,+this.value||1);OF.upd()">
-          <button type="button" class="x" onclick="OF.rmFree(${i})" aria-label="Quitar">✕</button></div>
+          <button type="button" class="btn ghost sm" onclick="OF.dupFree(${i})" title="Copia esta línea justo debajo. Luego cambias la talla y las unidades.">Duplicar</button><button type="button" class="x" onclick="OF.rmFree(${i})" aria-label="Quitar">✕</button></div>
           <div class="freephoto">${s.admin ? `<span class="mini">Precio por unidad</span>${this.priceInput('OF.s.free[' + i + '].price', f.price)}` : ''}${thumb(f.photo, true)}<label class="btn ghost sm" for="ff-${i}">${f.photo ? 'Cambiar foto' : '📷 Añadir foto'}</label>
           <input type="file" id="ff-${i}" accept="image/*" hidden onchange="OF.freePhoto(${i},this)">${f.photo ? `<button type="button" class="x" onclick="OF.s.free[${i}].photo='';OF.redraw()">Quitar foto</button>` : ''}</div></div>`).join('')}
         <button type="button" class="btn ghost sm" onclick="OF.addFree()">+ Añadir línea</button></div></div>`;
@@ -134,7 +134,7 @@ const OF = {
   },
   prodHTML(r, i) {
     return `<div class="prodrow"><div style="font-weight:600">${thumb((this.prod(r.product) || {}).photo)}${esc(r.product)}</div><div>${this.sizeSel(r, 'q', i, 0)}</div>
-      <div class="row"><input type="number" min="1" style="width:76px" value="${r.qty}" onchange="OF.s.prods[${i}].qty=Math.max(1,+this.value||1);OF.upd()"><button type="button" class="x" onclick="OF.rmProd(${i})" aria-label="Quitar">✕</button></div></div>
+      <div class="row"><input type="number" min="1" style="width:76px" value="${r.qty}" onchange="OF.s.prods[${i}].qty=Math.max(1,+this.value||1);OF.upd()"><button type="button" class="btn ghost sm" onclick="OF.dupProd(${i})" title="Copia esta línea justo debajo. Luego cambias la talla y las unidades.">Duplicar</button><button type="button" class="x" onclick="OF.rmProd(${i})" aria-label="Quitar">✕</button></div></div>
       ${this.s.admin ? `<div class="itemrow priceline"><span class="mini">Precio por unidad</span>${this.priceInput('OF.s.prods[' + i + '].price', r.price)}</div>` : ''}
       <div class="itemrow"><div class="fins">${this.itemFins(r, 'q', i, 0)}</div></div>`;
   },
@@ -187,7 +187,7 @@ const OF = {
     this.s.packs.push({ name, qty: 1, items, price: pk.price == null ? '' : pk.price });
     this.redraw();
   },
-  dup(i) { this.s.packs.splice(i + 1, 0, JSON.parse(JSON.stringify(this.s.packs[i]))); this.redraw(); },
+  dup(i) { const c = JSON.parse(JSON.stringify(this.s.packs[i])); c.items.forEach(it => this.blankValues(it)); this.s.packs.splice(i + 1, 0, c); this.redraw(); },
   rmPack(i) { this.s.packs.splice(i, 1); this.redraw(); },
   pqty(i, d) { this.pset(i, this.s.packs[i].qty + d); },
   pset(i, v) { this.s.packs[i].qty = Math.max(1, parseInt(v, 10) || 1); this.redraw(); },
@@ -197,6 +197,10 @@ const OF = {
     this.s.prods.push({ ...this.newItem(name), qty: 1, price: this.prod(name).price == null ? '' : this.prod(name).price });
     this.redraw();
   },
+  // Duplicar: se copia todo (talla, color, unidades, precio, acabados) salvo el dato del acabado (dorsal, iniciales…), que queda vacío
+  blankValues(item) { item.fins.forEach(f => { f.value = ''; }); return item; },
+  dupProd(i) { const c = this.blankValues(JSON.parse(JSON.stringify(this.s.prods[i]))); this.s.prods.splice(i + 1, 0, c); this.redraw(); },
+  dupFree(i) { this.s.free.splice(i + 1, 0, JSON.parse(JSON.stringify(this.s.free[i]))); this.redraw(); },
   rmProd(i) { this.s.prods.splice(i, 1); this.redraw(); },
   addFree() { this.s.free.push({ name: '', size: '', color: '', photo: '', qty: 1, price: '' }); this.redraw(); },
   async freePhoto(i, input) {

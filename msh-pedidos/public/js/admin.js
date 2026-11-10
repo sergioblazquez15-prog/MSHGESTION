@@ -60,13 +60,81 @@ A.redrawList = function () { $('main').innerHTML = A.listHTML(); };
 A.tableHTML = function () {
   const rows = A.visible();
   if (!rows.length) return `<div class="empty">${A.orders.length ? 'No hay pedidos con este filtro.' : 'Todavía no hay pedidos. Cuando un cliente envíe uno, aparecerá aquí.'}</div>`;
-  return `<table><thead><tr><th>Pedido</th><th>Cliente</th><th>Fecha</th><th>Fase</th><th>Entrega estimada</th><th>Estado</th></tr></thead><tbody>
+  return `<table><thead><tr><th>Pedido</th><th>Cliente</th><th>Fecha</th><th>Fase</th><th>Entrega estimada</th><th>Estado</th><th>Facturación</th></tr></thead><tbody>
   ${rows.map(o => `<tr class="${diffDays(o.est_delivery, S.today) <= 7 ? 'urgent' : ''}" style="cursor:pointer" onclick="go('orders/${o.id}')">
    <td><b>#${o.number}</b>${o.title ? ' · ' + esc(o.title) : ''}<br><span class="mini">${o.units} uds</span>${o.origin === 'admin' ? ' <span class="tag adm">MSH</span>' : ''}</td>
    <td><div class="cc">${shieldHTML(o)}${esc(o.client_name)}</div></td><td>${fmt(o.order_date)}</td>
    <td style="min-width:170px"><div class="mini" style="margin-bottom:5px">${esc(phName(o))}</div>${seg(o)}</td>
-   <td>${prioPill(o)}</td><td><span class="st ${stKey(o.status)}">${esc(o.status)}</span></td></tr>`).join('')}</tbody></table>`;
+   <td>${prioPill(o)}</td><td><span class="st ${stKey(o.status)}">${esc(o.status)}</span></td><td>${A.billPill(o)}</td></tr>`).join('')}</tbody></table>`;
 };
+
+/* ---------- albaranes de entrega ---------- */
+A.deliveryPanel = o => `<div class="panel" id="dl-panel"><div class="ph"><h2>Albaranes de entrega</h2></div><div class="pb"><div class="mini">Cargando…</div></div></div>`;
+A.dlLoad = async function () {
+  const box = $('dl-panel'); if (!box) return;
+  try { A.dl = await api('GET', `/api/orders/${A.o.id}/deliveries`); A.dl.draft = {}; box.innerHTML = A.dlHTML(); }
+  catch (e) { box.querySelector('.pb').innerHTML = '<div class="mini">No se pudieron cargar los albaranes: ' + esc(e.message) + '</div>'; }
+};
+A.dlHTML = function () {
+  const d = A.dl, items = d.items, pend = items.reduce((a, i) => a + i.pending, 0);
+  const sz = i => [i.size ? 'talla ' + i.size : '', i.color].filter(Boolean).join(' · ');
+  const grp = [], seen = new Map();
+  items.forEach(i => {
+    const k = i.kind === 'pack' ? 'p' + i.group_no : 'loose';
+    if (!seen.has(k)) { seen.set(k, { title: i.kind === 'pack' ? i.pack_name : 'Productos sueltos', rows: [] }); grp.push(seen.get(k)); }
+    seen.get(k).rows.push(i);
+  });
+  const row = i => { const n = items.indexOf(i); return `<tr><td>${esc(i.product_name)}${i.kind === 'free' ? ' <span class="mini">(fuera de catálogo)</span>' : ''}${i.detail ? `<div class="mini">${esc(i.detail)}</div>` : ''}<div class="mini">${esc(sz(i))}</div></td>
+    <td class="r">${i.ordered}</td><td class="r">${i.delivered}</td><td class="r"><b>${i.pending}</b></td>
+    <td class="r">${i.pending ? `<input type="number" class="dlq" min="0" max="${i.pending}" value="${A.dl.draft[i.key] || 0}" style="width:64px" onchange="A.dlSet(${n},this)">` : '<span class="pill-on">✓</span>'}</td></tr>`; };
+  const prev = d.deliveries.map(x => `<div class="sumrow"><span><b>${esc(x.code)}</b> · ${fmt(x.delivered_at)} · ${x.units} uds${x.delivered_by ? ' · ' + esc(x.delivered_by) : ''}</span>
+    <span class="btnrow"><a class="btn ghost sm" style="text-decoration:none" target="_blank" href="/albaran.html?id=${x.id}">Imprimir</a><button class="x" onclick="A.dlDel(${x.id},'${esc(x.code)}')">Eliminar</button></span></div>`).join('');
+  return `<div class="ph"><h2>Albaranes de entrega</h2><span class="mini">Sin importes · parciales</span></div><div class="pb">
+   <p class="hint" style="margin-top:0">Pon cuántas unidades entregas ahora de cada artículo. El albarán sale sin precios y con lo que queda pendiente.</p>
+   ${pend ? `<div class="tblwrap"><table style="min-width:520px"><thead><tr><th style="min-width:200px">Artículo</th><th class="r">Pedidas</th><th class="r">Ya entregadas</th><th class="r">Pendientes</th><th class="r">Entregar ahora</th></tr></thead><tbody>
+    ${grp.map(g => `<tr class="grp"><td colspan="5"><b>${esc(g.title)}</b></td></tr>${g.rows.map(row).join('')}`).join('')}</tbody></table></div>
+   <div class="row" style="margin-top:12px;align-items:flex-end"><div class="field" style="margin:0"><label>Fecha de entrega</label><input type="date" id="dl-date" value="${S.today}"></div>
+    <div class="field" style="margin:0;flex:1;min-width:180px"><label>Observaciones (opcional)</label><input type="text" id="dl-notes" style="width:100%"></div></div>
+   <div class="btnrow" style="margin-top:12px"><button class="btn ghost" onclick="A.dlAll()">Entregar todo lo pendiente</button><button class="btn amber" onclick="A.dlCreate()">Crear albarán</button></div>`
+   : '<div class="notice">Todo lo pedido ya está entregado en albaranes.</div>'}
+   ${prev ? `<h4 style="margin:20px 0 6px">Albaranes ya creados</h4>${prev}` : ''}</div>`;
+};
+A.dlSet = (n, el) => { const i = A.dl.items[n]; let v = Math.max(0, Math.min(i.pending, parseInt(el.value, 10) || 0)); el.value = v; A.dl.draft[i.key] = v; };
+A.dlAll = () => { A.dl.items.forEach(i => { A.dl.draft[i.key] = i.pending; }); const keep = [$('dl-date').value, $('dl-notes').value]; $('dl-panel').innerHTML = A.dlHTML(); $('dl-date').value = keep[0]; $('dl-notes').value = keep[1]; };
+A.dlCreate = async () => safe(async () => {
+  const lines = Object.keys(A.dl.draft).map(key => ({ key, qty: A.dl.draft[key] })).filter(l => l.qty > 0);
+  if (!lines.length) throw new Error('Pon al menos una unidad en «Entregar ahora»');
+  const r = await api('POST', `/api/orders/${A.o.id}/deliveries`, { lines, delivered_at: $('dl-date').value, notes: $('dl-notes').value });
+  toast('Albarán creado'); window.open('/albaran.html?id=' + r.id, '_blank'); A.reload();
+});
+A.dlDel = async (id, code) => { if (!confirm('¿Eliminar el albarán ' + code + '? Sus unidades vuelven a quedar pendientes.')) return; await safe(async () => { await api('DELETE', '/api/deliveries/' + id); toast('Albarán eliminado'); A.reload(); }); };
+
+/* ---------- exportar a FactuSOL ---------- */
+A.factusolPanel = o => `<h4 style="margin:18px 0 8px">Pasar a FactuSOL</h4><div id="fs-box"><span class="mini">Comprobando…</span></div>`;
+A.fsLoad = async function () {
+  const box = $('fs-box'); if (!box) return;
+  try {
+    const r = await api('GET', `/api/orders/${A.o.id}/factusol`);
+    const inv = r.invoice;
+    box.innerHTML = `${r.issues.length ? `<div class="notice" style="margin-bottom:10px">${r.issues.map(esc).join('<br>')}</div>` : ''}
+     <p class="hint" style="margin:0 0 10px">${inv ? 'Factura reservada: <b>' + esc(inv.code) + '</b>. Si vuelves a descargar, mantiene el mismo número.' : 'Al descargar se reserva el número <b>' + esc(r.next_code) + '</b>.'}</p>
+     <div class="btnrow"><button class="btn amber sm" ${r.blocking ? 'disabled style="opacity:.5"' : ''} onclick="A.fsExport()">Descargar para FactuSOL (FAC + LFA)</button>${inv ? '<button class="btn ghost sm" onclick="A.fsRelease()">Anular número</button>' : ''}</div>`;
+  } catch (e) { box.innerHTML = '<span class="mini">' + esc(e.message) + '</span>'; }
+};
+A.fsExport = async () => safe(async () => {
+  const res = await fetch(`/api/orders/${A.o.id}/factusol`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
+  if (!res.ok) { let m = 'No se pudo exportar'; try { m = (await res.json()).error || m; } catch (e) { /* */ } throw new Error(m); }
+  const blob = await res.blob(), code = res.headers.get('X-Invoice') || 'factura', warn = decodeURIComponent(res.headers.get('X-Warnings') || '');
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'factusol-' + code + '.zip';
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  toast(warn ? 'Descargado con avisos: ' + warn : 'Descargado: factura ' + code, !!warn);
+  A.fsLoad();
+});
+A.fsRelease = async () => { if (!confirm('¿Anular el número reservado de este pedido? Solo se libera si fue el último.')) return; await safe(async () => { const r = await api('DELETE', `/api/orders/${A.o.id}/factusol`); toast(r.released ? 'Número liberado' : 'Anulado (el número no se reutiliza porque ya hay otro después)'); A.reload(); }); };
+
+A.billPill = o => o.invoiced
+  ? `<span class="bill ok">Facturado${o.invoice_number ? ' · ' + esc(o.invoice_number) : ''}</span>`
+  : `<span class="bill pend">Pendiente de facturar</span>`;
 
 /* ---------- histórico ---------- */
 A.hist = async function () {
@@ -89,9 +157,9 @@ A.histRedraw = function () { $('htbl').innerHTML = A.histTable(); };
 A.histTable = function () {
   const rows = A.histRows();
   if (!rows.length) return '<div class="empty">No hay pedidos entregados con este filtro.</div>';
-  return `<table><thead><tr><th>Pedido</th><th>Cliente</th><th>Fecha</th><th>Entregado</th><th>Documentos</th></tr></thead><tbody>
+  return `<table><thead><tr><th>Pedido</th><th>Cliente</th><th>Fecha</th><th>Entregado</th><th>Facturación</th><th>Documentos</th></tr></thead><tbody>
   ${rows.map(o => `<tr style="cursor:pointer" onclick="go('orders/${o.id}')"><td><b>#${o.number}</b>${o.title ? ' · ' + esc(o.title) : ''} <span class="mini">${o.units} uds</span></td>
-   <td><div class="cc">${shieldHTML(o)}${esc(o.client_name)}</div></td><td>${fmt(o.order_date)}</td><td>${fmt(o.delivered_at)}</td>
+   <td><div class="cc">${shieldHTML(o)}${esc(o.client_name)}</div></td><td>${fmt(o.order_date)}</td><td>${fmt(o.delivered_at)}</td><td>${A.billPill(o)}</td>
    <td>${['albaran', 'factura'].map(k => `<span class="pdf ${o.docs.some(d => d.kind === k) ? 'ok' : ''}">${k === 'albaran' ? 'Albarán' : 'Factura'}</span>`).join(' ')}</td></tr>`).join('')}</tbody></table>`;
 };
 
@@ -99,14 +167,14 @@ A.histTable = function () {
 A.detail = async function (id) {
   const o = await api('GET', '/api/orders/' + id);
   A.o = o;
-  return { html: A.detailHTML(o), after: () => { PE.init(o.phases, o, { enable: true, onChange: () => { $('ph-save').disabled = false; } }); $('ph-edit').innerHTML = PE.html(); PE.mount(); } };
+  return { html: A.detailHTML(o), after: () => { PE.init(o.phases, o, { enable: true, onChange: () => { $('ph-save').disabled = false; } }); $('ph-edit').innerHTML = PE.html(); PE.mount(); A.dlLoad(); A.fsLoad(); } };
 };
 A.detailHTML = function (o) {
   const fin = o.status === 'Entregado';
   return `<span class="crumb" onclick="go('${fin ? 'hist' : 'orders'}')">← ${fin ? 'Histórico' : 'Pedidos'}</span>
   <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:18px"><div class="row" style="gap:16px">${crestHTML({ name: o.client_name, crest: o.client_crest, color: o.client_color }, true)}
    <div><h1>${esc(ordTitle(o))}</h1><div class="sub" style="margin:6px 0 0">${esc(o.client_name)} · ${fmt(o.order_date)}${o.channel ? ' · ' + esc(o.channel) : ''}${o.origin === 'admin' ? ' · introducido por MSH' : ' · enviado por el cliente'}</div></div></div>
-   <span class="st ${stKey(o.status)}" style="font-size:14px">${esc(o.status)}</span></div>
+   <span class="row" style="gap:10px">${A.billPill(o)}<span class="st ${stKey(o.status)}" style="font-size:14px">${esc(o.status)}</span></span></div>
   <div class="panel"><div class="ph"><h2>Datos del pedido</h2></div><div class="pb"><div class="row" style="align-items:flex-end">
    <div class="field" style="margin:0;width:120px"><label>Nº de pedido</label><input type="number" min="1" id="m-num" value="${o.number}" style="width:100%"></div>
    <div class="field" style="margin:0;flex:1;min-width:220px"><label>Título o detalle</label><input type="text" id="m-title" value="${esc(o.title || '')}" placeholder="Ej. Tallaje Encinas" style="width:100%"></div>
@@ -120,8 +188,13 @@ A.detailHTML = function (o) {
    <div class="row" style="margin-top:14px"><span class="mini">El cliente ve:</span><button class="chip ${o.client_view === 'estado' ? 'on' : ''}" onclick="A.setView('estado')">Solo el estado</button><button class="chip ${o.client_view === 'cronograma' ? 'on' : ''}" onclick="A.setView('cronograma')">El cronograma completo</button></div></div></div>
   <div class="grid2"><div>
    <div class="panel"><div class="ph"><h2>Artículos · ${o.units} uds</h2><span class="btnrow"><button class="btn ghost sm" onclick="go('edit/${o.id}')">Editar pedido</button></span></div><div class="pb">${linesHTML(o)}${o.notes ? `<p class="hint"><b>Notas:</b> ${esc(o.notes)}</p>` : ''}</div></div>
+   ${A.deliveryPanel ? A.deliveryPanel(o) : ''}
    <div class="panel"><div class="ph"><h2>Documentos del pedido</h2></div><div class="pb">${A.docsHTML(o)}</div></div></div>
-  <div><div class="panel"><div class="ph"><h2>Historial</h2></div><div class="pb">${o.log.map(l => `<div class="logline"><span class="t">${esc(l.at.slice(0, 16))}</span><span>${esc(l.what)}${l.by_user ? ' <span class="mini">· ' + esc(l.by_user) + '</span>' : ''}</span></div>`).join('')}</div></div>
+  <div><div class="panel"><div class="ph"><h2>Facturación</h2>${A.billPill(o)}</div><div class="pb">
+    <p class="hint" style="margin-top:0">${o.invoiced ? 'Este pedido está facturado' + (o.invoiced_at ? ' desde el ' + fmt(o.invoiced_at) : '') + '.' : 'Se marca solo como facturado al subir la factura en PDF. También puedes marcarlo a mano.'}</p>
+    <div class="btnrow"><button class="btn ${o.invoiced ? 'ghost' : 'amber'} sm" onclick="A.setInvoiced(${o.invoiced ? 'false' : 'true'})">${o.invoiced ? 'Marcar como pendiente de facturar' : 'Marcar como facturado'}</button></div>
+    ${A.factusolPanel ? A.factusolPanel(o) : ''}</div></div>
+   <div class="panel"><div class="ph"><h2>Historial</h2></div><div class="pb">${o.log.map(l => `<div class="logline"><span class="t">${esc(l.at.slice(0, 16))}</span><span>${esc(l.what)}${l.by_user ? ' <span class="mini">· ' + esc(l.by_user) + '</span>' : ''}</span></div>`).join('')}</div></div>
    <div class="panel"><div class="ph"><h2>Zona delicada</h2></div><div class="pb"><button class="btn danger sm" onclick="A.delOrder()">Borrar pedido</button><p class="hint">Solo para pedidos duplicados o de prueba. Se borran también sus documentos.</p></div></div></div></div>
   <div class="panel"><div class="ph"><h2>Fases y plazos de este pedido</h2></div><div class="pb">
    <div class="field" style="max-width:240px"><label>Fecha del pedido</label><input type="date" id="ph-date" value="${o.order_date}" onchange="PE.s.base.order_date=this.value;PE.prev();$('ph-save').disabled=false"></div>
@@ -137,6 +210,7 @@ A.docsHTML = function (o) {
   return `<p class="hint" style="margin-top:0">El pedido inicial es solo para ti (foto, PDF o Excel) y el cliente no lo ve. El albarán y la factura van en PDF desde FactuSOL y el cliente los descarga desde su panel.</p>${row('pedido', 'Pedido inicial del cliente (para cotejar)', 'image/*,.pdf,.xls,.xlsx,.csv')}${row('albaran', 'Albarán')}${row('factura', 'Factura')}`;
 };
 A.reload = function () { route(); };
+A.setInvoiced = async (on) => safe(async () => { await api('POST', `/api/orders/${A.o.id}/invoiced`, { invoiced: on }); toast(on ? 'Marcado como facturado' : 'Marcado como pendiente de facturar'); A.reload(); });
 A.saveMeta = async () => safe(async () => {
   await api('POST', `/api/orders/${A.o.id}/meta`, { number: $('m-num').value, title: $('m-title').value });
   toast('Datos guardados'); A.reload();
@@ -295,6 +369,14 @@ A.clientEdit = async function (id) {
      <label class="cfgbox" style="margin-top:6px"><input type="checkbox" id="c-prods" ${c.allow_products ? 'checked' : ''}> Productos sueltos del catálogo</label>
      <label class="cfgbox" style="margin-top:6px"><input type="checkbox" id="c-free" ${c.allow_free ? 'checked' : ''}> Líneas libres (fuera de catálogo)</label></div>
     <div class="field"><label class="cfgbox"><input type="checkbox" id="c-active" ${c.active ? 'checked' : ''}> Cliente activo (puede entrar y pedir)</label></div>
+    <h4 style="margin:18px 0 10px">Datos de facturación (FactuSOL)</h4>
+    <p class="hint" style="margin-top:0">El código es el que tiene el cliente en FactuSOL (por ejemplo 7). Sin él no se puede exportar su factura. La dirección sale también en el albarán de entrega.</p>
+    <div class="field"><label>Código de cliente en FactuSOL</label><input type="text" id="c-fcode" inputmode="numeric" maxlength="6" value="${esc(c.factusol_code)}" style="width:140px"></div>
+    <div class="field"><label>NIF / CIF</label><input type="text" id="c-tax" value="${esc(c.tax_id)}"></div>
+    <div class="field"><label>Dirección</label><input type="text" id="c-addr" value="${esc(c.address)}"></div>
+    <div class="field"><label>Código postal</label><input type="text" id="c-postal" value="${esc(c.postal_code)}" style="width:140px"></div>
+    <div class="field"><label>Población</label><input type="text" id="c-city" value="${esc(c.city)}"></div>
+    <div class="field"><label>Provincia</label><input type="text" id="c-prov" value="${esc(c.province)}"></div>
     <div class="btnrow"><button class="btn amber" onclick="A.saveClient()">Guardar</button><button class="btn ghost" onclick="go('catalog/${c.id}')">Editar su catálogo</button><button class="btn ghost" onclick="go('new/${c.id}')">Crear pedido</button></div></div></div>
    ${c.total_orders ? '' : `<div class="panel"><div class="ph"><h2>Zona delicada</h2></div><div class="pb"><button class="btn danger sm" onclick="A.delClient()">Borrar cliente</button><p class="hint">Solo se puede borrar un cliente sin pedidos.</p></div></div>`}</div>
   <div class="panel"><div class="ph"><h2>Usuarios con acceso</h2></div><div class="pb">
@@ -307,7 +389,7 @@ A.clientEdit = async function (id) {
    <button class="btn amber" onclick="A.addUser()">Crear usuario</button></div></div></div>`;
 };
 A.saveClient = async () => safe(async () => {
-  await api('PUT', '/api/clients/' + A.c.id, { name: $('c-name').value, color: $('c-color').value, allow_packs: $('c-packs').checked, allow_products: $('c-prods').checked, allow_free: $('c-free').checked, can_order: $('c-order').checked, active: $('c-active').checked });
+  await api('PUT', '/api/clients/' + A.c.id, { name: $('c-name').value, color: $('c-color').value, allow_packs: $('c-packs').checked, allow_products: $('c-prods').checked, allow_free: $('c-free').checked, can_order: $('c-order').checked, active: $('c-active').checked, factusol_code: $('c-fcode').value, tax_id: $('c-tax').value, address: $('c-addr').value, postal_code: $('c-postal').value, city: $('c-city').value, province: $('c-prov').value });
   toast('Cliente guardado'); A.reload();
 });
 A.crest = async () => {
@@ -332,9 +414,9 @@ A.catalog = async function (clientId) {
   A.catClient = clientId ? +clientId : (A.catClient && A.clients.some(c => c.id === A.catClient) ? A.catClient : A.clients[0].id);
   const cat = await api('GET', `/api/clients/${A.catClient}/catalog`);
   // Estado editable con ids locales estables
-  const fin = cat.finishes.map(f => ({ id: kid(), name: f.name, asks_value: f.asks_value, value_label: f.value_label, price: f.price == null ? '' : f.price }));
-  const prod = cat.products.map(p => ({ id: kid(), name: p.name, photo: p.photo || '', sizes: p.sizes, price: p.price == null ? '' : p.price, finishes: { ...p.finishes } }));
-  const pack = cat.packs.map(p => ({ id: kid(), name: p.name, price: p.price == null ? '' : p.price, items: p.items.map(n => (prod.find(x => x.name === n) || {}).id).filter(Boolean) }));
+  const fin = cat.finishes.map(f => ({ id: kid(), name: f.name, asks_value: f.asks_value, value_label: f.value_label, price: f.price == null ? '' : f.price, code: f.code || '' }));
+  const prod = cat.products.map(p => ({ id: kid(), name: p.name, photo: p.photo || '', sizes: p.sizes, price: p.price == null ? '' : p.price, code: p.code || '', finishes: { ...p.finishes } }));
+  const pack = cat.packs.map(p => ({ id: kid(), name: p.name, price: p.price == null ? '' : p.price, code: p.code || '', items: p.items.map(n => (prod.find(x => x.name === n) || {}).id).filter(Boolean) }));
   A.K = { fin, prod, pack, dirty: false };
   return { html: `<h1>Catálogo</h1><p class="sub">Lo que cada cliente puede pedir: acabados, productos y packs. Solo lo edita MSH.</p>
    <div class="toolbar">${sel('cat-client', clientOpts(false), A.catClient, 'onchange="go(\'catalog/\'+this.value)"')}<span class="grow"><button class="btn amber" id="cat-save" onclick="A.saveCat()" disabled>Guardar catálogo</button></span></div>
@@ -349,6 +431,7 @@ A.catHTML = function () {
      <label class="cfgbox"><input type="checkbox" ${f.asks_value ? 'checked' : ''} onchange="A.K.fin[${i}].asks_value=this.checked;A.dirty();A.catRefresh()"> Pide un dato</label>
      ${f.asks_value ? `<input type="text" style="width:150px" placeholder="Qué dato (ej. Nº dorsal)" value="${esc(f.value_label)}" oninput="A.K.fin[${i}].value_label=this.value;A.dirty()">` : ''}
      <input type="number" step="0.01" min="0" style="width:120px" placeholder="+ € / ud" title="Suplemento por unidad cuando el acabado es opcional y se elige" value="${esc(f.price)}" oninput="A.K.fin[${i}].price=this.value;A.dirty()">
+     <input type="text" style="width:110px" maxlength="13" placeholder="Código (auto)" title="Código de artículo en FactuSOL. Déjalo vacío y se genera solo." value="${esc(f.code)}" oninput="A.K.fin[${i}].code=this.value;A.dirty()">
      <button class="x" onclick="A.rm('fin',${i})">✕</button></div>`).join('')}
    <button class="btn ghost sm" onclick="A.addFin()">+ Añadir acabado</button></div></div>`;
   const names = K.fin.filter(f => f.name.trim());
@@ -356,7 +439,8 @@ A.catHTML = function () {
    <p class="hint" style="margin-top:0">Tallas separadas por comas. Para cada acabado: <b>No</b> (no se puede poner), <b>Fijo</b> (siempre lo lleva) u <b>Opcional</b> (el cliente decide).</p>
    ${K.prod.map((p, i) => `<div class="box"><div class="row" style="margin-bottom:10px"><input type="text" style="min-width:210px;flex:1" placeholder="Nombre del producto" value="${esc(p.name)}" oninput="A.K.prod[${i}].name=this.value;A.dirty()" onchange="A.catRefresh()">
      <input type="text" style="width:220px" placeholder="Tallas: S,M,L,XL" value="${esc(p.sizes)}" oninput="A.K.prod[${i}].sizes=this.value;A.dirty()">
-     <input type="number" step="0.01" min="0" style="width:96px" placeholder="Precio €" value="${esc(p.price)}" oninput="A.K.prod[${i}].price=this.value;A.dirty()"><button class="x" onclick="A.rm('prod',${i})">✕</button></div>
+     <input type="number" step="0.01" min="0" style="width:96px" placeholder="Precio €" value="${esc(p.price)}" oninput="A.K.prod[${i}].price=this.value;A.dirty()">
+     <input type="text" style="width:110px" maxlength="13" placeholder="Código (auto)" title="Código de artículo en FactuSOL. Déjalo vacío y se genera solo." value="${esc(p.code)}" oninput="A.K.prod[${i}].code=this.value;A.dirty()"><button class="x" onclick="A.rm('prod',${i})">✕</button></div>
      <div class="freephoto" style="margin-bottom:12px">${thumb(p.photo, true)}<label class="btn ghost sm" for="pp-${i}">${p.photo ? 'Cambiar foto' : '📷 Añadir foto del producto'}</label><input type="file" id="pp-${i}" accept="image/*" hidden onchange="A.prodPhoto(${i},this)">${p.photo ? `<button class="x" onclick="A.K.prod[${i}].photo='';A.dirty();A.catRefresh()">Quitar foto</button>` : ''}</div>
      <div class="matrix">${names.map(f => `<label>${esc(f.name)}<select class="${p.finishes[f.name] === 'fixed' ? 'fix' : p.finishes[f.name] === 'optional' ? 'cfg' : ''}" onchange="A.setMode(${i},'${f.id}',this.value,this)">
        ${[['', 'No'], ['fixed', 'Fijo'], ['optional', 'Opcional']].map(m => `<option value="${m[0]}" ${(p.finishes[f.name] || '') === m[0] ? 'selected' : ''}>${m[1]}</option>`).join('')}</select></label>`).join('') || '<span class="mini">Añade acabados arriba para configurarlos aquí.</span>'}</div></div>`).join('')}
@@ -364,7 +448,8 @@ A.catHTML = function () {
   const packBox = `<div class="panel"><div class="ph"><h2>3. Packs</h2></div><div class="pb">
    <p class="hint" style="margin-top:0">Un pack es un conjunto de productos. Al pedirlo, el cliente elige talla y acabados de cada uno.</p>
    ${K.pack.map((p, i) => `<div class="box"><div class="row" style="margin-bottom:10px"><input type="text" style="min-width:210px;flex:1" placeholder="Nombre del pack" value="${esc(p.name)}" oninput="A.K.pack[${i}].name=this.value;A.dirty()">
-     <input type="number" step="0.01" min="0" style="width:96px" placeholder="Precio €" value="${esc(p.price)}" oninput="A.K.pack[${i}].price=this.value;A.dirty()"><button class="x" onclick="A.rm('pack',${i})">✕</button></div>
+     <input type="number" step="0.01" min="0" style="width:96px" placeholder="Precio €" value="${esc(p.price)}" oninput="A.K.pack[${i}].price=this.value;A.dirty()">
+     <input type="text" style="width:110px" maxlength="13" placeholder="Código (auto)" title="Código de artículo en FactuSOL. Déjalo vacío y se genera solo." value="${esc(p.code)}" oninput="A.K.pack[${i}].code=this.value;A.dirty()"><button class="x" onclick="A.rm('pack',${i})">✕</button></div>
      ${K.prod.filter(x => x.name.trim()).length ? `<div class="chips">${K.prod.filter(x => x.name.trim()).map(x => `<label class="chip ${p.items.includes(x.id) ? 'on' : ''}" style="cursor:pointer"><input type="checkbox" hidden ${p.items.includes(x.id) ? 'checked' : ''} onchange="A.togglePackItem(${i},${x.id},this.checked,this)">${esc(x.name)}</label>`).join('')}</div>` : '<span class="mini">Añade productos arriba.</span>'}</div>`).join('')}
    <button class="btn ghost sm" onclick="A.addPack()">+ Añadir pack</button></div></div>`;
   return finBox + prodBox + packBox;
@@ -376,9 +461,9 @@ A.renFin = (i, v) => {
   A.K.prod.forEach(p => { if (old in p.finishes && old !== v) { p.finishes[v] = p.finishes[old]; delete p.finishes[old]; } });
   A.dirty();
 };
-A.addFin = () => { A.K.fin.push({ id: kid(), name: '', asks_value: false, value_label: '', price: '' }); A.dirty(); A.catRefresh(); };
-A.addProd = () => { A.K.prod.push({ id: kid(), name: '', photo: '', sizes: '', price: '', finishes: {} }); A.dirty(); A.catRefresh(); };
-A.addPack = () => { A.K.pack.push({ id: kid(), name: '', price: '', items: [] }); A.dirty(); A.catRefresh(); };
+A.addFin = () => { A.K.fin.push({ id: kid(), name: '', asks_value: false, value_label: '', price: '', code: '' }); A.dirty(); A.catRefresh(); };
+A.addProd = () => { A.K.prod.push({ id: kid(), name: '', photo: '', sizes: '', price: '', code: '', finishes: {} }); A.dirty(); A.catRefresh(); };
+A.addPack = () => { A.K.pack.push({ id: kid(), name: '', price: '', code: '', items: [] }); A.dirty(); A.catRefresh(); };
 A.prodPhoto = async (i, input) => {
   const f = input.files[0]; if (!f) return;
   await safe(async () => { toast('Subiendo foto…'); A.K.prod[i].photo = await uploadPhoto(f); A.dirty(); A.catRefresh(); toast('Foto añadida. Pulsa «Guardar catálogo».'); });
@@ -398,9 +483,9 @@ A.togglePackItem = (pi, prodId, on, el) => {
 A.saveCat = async () => safe(async () => {
   const K = A.K, byId = new Map(K.prod.map(p => [p.id, p.name.trim()]));
   const body = {
-    finishes: K.fin.map(f => ({ name: f.name.trim(), asks_value: f.asks_value, value_label: f.value_label, price: f.price })),
-    products: K.prod.map(p => ({ name: p.name.trim(), photo: p.photo, sizes: p.sizes, price: p.price, finishes: p.finishes })),
-    packs: K.pack.map(p => ({ name: p.name.trim(), price: p.price, items: p.items.map(id => byId.get(id)).filter(Boolean) }))
+    finishes: K.fin.map(f => ({ name: f.name.trim(), asks_value: f.asks_value, value_label: f.value_label, price: f.price, code: f.code })),
+    products: K.prod.map(p => ({ name: p.name.trim(), photo: p.photo, sizes: p.sizes, price: p.price, code: p.code, finishes: p.finishes })),
+    packs: K.pack.map(p => ({ name: p.name.trim(), price: p.price, code: p.code, items: p.items.map(id => byId.get(id)).filter(Boolean) }))
   };
   await api('PUT', `/api/clients/${A.catClient}/catalog`, body);
   toast('Catálogo guardado'); A.reload();
@@ -479,8 +564,14 @@ A.saveTemplate = async () => safe(async () => {
 A.settings = async function () {
   const [st, admins, mails] = await Promise.all([api('GET', '/api/settings'), api('GET', '/api/admins'), api('GET', '/api/emails')]);
   const f = (id, label, val, extra) => `<div class="field"><label>${label}</label><input type="text" id="${id}" value="${esc(val)}" ${extra || ''}></div>`;
-  return `<h1>Ajustes</h1><p class="sub">Correo, administradores y tu contraseña.</p>
+  return `<h1>Ajustes</h1><p class="sub">Datos de empresa, facturación, correo, administradores y tu contraseña.</p>
   <div class="grid2"><div>
+   <div class="panel"><div class="ph"><h2>Datos de la empresa</h2></div><div class="pb">
+    <p class="hint" style="margin-top:0">Salen en la cabecera de los albaranes de entrega.</p>
+    ${f('c-name', 'Razón social', st.company_name)}${f('c-cif', 'CIF', st.company_cif)}${f('c-addr', 'Dirección', st.company_address)}${f('c-postal', 'Código postal', st.company_postal)}${f('c-city', 'Población', st.company_city)}${f('c-phone', 'Teléfono (opcional)', st.company_phone)}${f('c-email', 'Correo (opcional)', st.company_email)}
+    <h4 style="margin:18px 0 10px">Facturación (FactuSOL)</h4>
+    ${f('i-doc', 'Tipo de documento / serie de la factura', st.invoice_doc_type)}${f('i-next', 'Siguiente número de factura', st.invoice_next)}${f('i-pay', 'Código de forma de pago en FactuSOL (opcional)', st.invoice_pay_code)}
+    <div class="btnrow"><button class="btn amber" onclick="A.saveSettings()">Guardar</button><a class="btn ghost" style="text-decoration:none" href="/api/factusol/articles">Descargar códigos de artículo</a></div></div></div>
    <div class="panel"><div class="ph"><h2>Correo saliente</h2></div><div class="pb">
     <p class="hint" style="margin-top:0">Con esto la app avisa a los clientes en cada cambio. Usa los datos SMTP de tu proveedor de correo.</p>
     ${f('s-host', 'Servidor SMTP', st.smtp_host, 'placeholder="smtp.tuproveedor.com"')}${f('s-port', 'Puerto (587 o 465)', st.smtp_port)}${f('s-user', 'Usuario', st.smtp_user)}
@@ -503,7 +594,7 @@ A.settings = async function () {
     <button class="btn amber" onclick="changePassword()">Cambiar contraseña</button></div></div></div></div>`;
 };
 A.saveSettings = async () => safe(async () => {
-  await api('PUT', '/api/settings', { smtp_host: $('s-host').value, smtp_port: $('s-port').value, smtp_user: $('s-user').value, smtp_pass: $('s-pass').value, smtp_from: $('s-from').value, notify_email: $('s-notify').value, public_url: $('s-url').value, brand_name: $('s-brand').value });
+  await api('PUT', '/api/settings', { smtp_host: $('s-host').value, smtp_port: $('s-port').value, smtp_user: $('s-user').value, smtp_pass: $('s-pass').value, smtp_from: $('s-from').value, notify_email: $('s-notify').value, public_url: $('s-url').value, brand_name: $('s-brand').value, company_name: $('c-name').value, company_cif: $('c-cif').value, company_address: $('c-addr').value, company_postal: $('c-postal').value, company_city: $('c-city').value, company_phone: $('c-phone').value, company_email: $('c-email').value, invoice_doc_type: $('i-doc').value, invoice_next: $('i-next').value, invoice_pay_code: $('i-pay').value });
   toast('Ajustes guardados'); A.reload();
 });
 A.testMail = async () => {

@@ -121,8 +121,8 @@ function renderApp() {
   const admin = S.me.role === 'admin';
   const nav = admin ? ADMIN_NAV : (S.client.can_order ? CLIENT_NAV : [['mine', 'Mis pedidos']]);
   const head = admin
-    ? `<div class="brand">MSH <em>Pedidos</em></div>`
-    : `<div style="display:flex;align-items:center;gap:14px">${crestHTML(S.client, true)}<div><div class="mini">Panel de pedidos</div><div class="clname">${esc(S.client.name)}</div></div></div>`;
+    ? `<div class="brand"><img class="brandlogo" src="/img/logo-blanco.png" alt="MSH"><span>MSH <em>gestión</em></span></div>`
+    : `<div style="display:flex;align-items:center;gap:14px">${crestHTML(S.client, true)}<div><div class="mini">MSH gestión</div><div class="clname">${esc(S.client.name)}</div></div></div>`;
   $('root').innerHTML = `<div class="shell">
     <div class="topbar">${head}<div class="who"><span>${esc(S.me.name || S.me.email)}</span> <button class="linkbtn" onclick="logout()">Salir</button></div></div>
     <nav class="topnav" id="topnav">${nav.map(n => `<a data-k="${n[0]}" onclick="go('${n[0]}')">${ico(n[0])}<span>${n[1]}</span><span class="badge" id="badge-${n[0]}" style="display:none"></span></a>`).join('')}</nav>
@@ -158,7 +158,7 @@ async function route() {
 function renderLogin() {
   const setup = S.needsSetup;
   $('root').innerHTML = `<div class="login"><div class="card">
-    <h1>MSH <em style="font-style:italic;color:var(--accent)">Pedidos</em></h1>
+    <img class="loginlogo" src="/img/logo-blanco.png" alt="MSH"><h1>MSH <em style="font-style:italic;color:var(--accent)">gestión</em></h1>
     <p class="sub">${setup ? 'Primera vez aquí. Crea el administrador de la aplicación.' : 'Entra con tu correo y contraseña.'}</p>
     <form onsubmit="return doLogin(event)">
       ${setup ? '<div class="field"><label>Tu nombre</label><input type="text" id="lg-name" autocomplete="name"></div>' : ''}

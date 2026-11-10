@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Albarán de entrega · MSH</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  @page{size:A4;margin:12mm}
+  *{box-sizing:border-box}
+  html,body{background:#fff;color:#141414;margin:0}
+  body{font-family:Inter,Helvetica,Arial,sans-serif;font-size:12px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .pg{width:186mm;max-width:100%;margin:0 auto;padding:6mm 0}
+  .noprint{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap}
+  .noprint button{background:#d4af37;border:0;border-radius:999px;padding:9px 18px;font:inherit;font-weight:600;cursor:pointer}
+  .top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #d4af37;padding-bottom:12px;gap:16px}
+  .logo{height:15mm;width:auto;display:block}
+  .co{font-size:10.5px;color:#555;margin-top:8px;line-height:1.5}
+  .doc{text-align:right}
+  .doc h1{font-family:Fraunces,Georgia,serif;font-weight:400;font-size:26px;margin:0}
+  .doc .no{font-size:15px;font-weight:600;margin-top:4px}
+  .doc .st{display:inline-block;margin-top:8px;border:1px solid #d4af37;background:#fbf6e3;color:#6b5410;border-radius:999px;padding:3px 12px;font-size:11px;font-weight:600}
+  .meta{display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:10px;margin:16px 0}
+  .box{border:1px solid #e3dcc0;background:#faf8f0;border-radius:10px;padding:9px 12px}
+  .box span{display:block;font-size:10px;color:#777;margin-bottom:2px}
+  .box b{font-size:12.5px}
+  .cl{display:flex;align-items:center;gap:10px}
+  .crest{width:15mm;height:15mm;border-radius:50%;object-fit:cover;flex:none}
+  .crest.ph{display:flex;align-items:center;justify-content:center;color:#111;font-weight:700;font-size:14px}
+  h2{font-family:Fraunces,Georgia,serif;font-weight:400;font-size:16px;margin:18px 0 8px}
+  table{width:100%;border-collapse:collapse}
+  th{background:#f4f1e6;border-bottom:1px solid #d9d2b3;padding:7px 6px;font-size:10.5px;text-align:left;font-weight:600}
+  td{padding:7px 6px;border-bottom:1px solid #ececec;vertical-align:middle}
+  tr{break-inside:avoid;page-break-inside:avoid}
+  thead{display:table-header-group}
+  .c{text-align:center;white-space:nowrap}
+  tr.grp td{background:#faf8f0;font-weight:600;border-top:1px solid #d9d2b3}
+  .sub{color:#666;font-size:10.5px}
+  th.now,td.now{background:#fbf6e3;font-weight:700;font-size:13px}
+  th.now{background:#f0e3a8;font-size:10.5px}
+  .pend{color:#a35a00;font-weight:600} .done{color:#2e7d57;font-weight:600}
+  .resumen{display:flex;gap:10px;margin-top:14px;break-inside:avoid}
+  .resumen .box{flex:1;text-align:center} .resumen b{font-size:18px;font-family:Fraunces,Georgia,serif;font-weight:400;display:block}
+  .firmas{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:26px;break-inside:avoid}
+  .firma{border:1px solid #d9d2b3;border-radius:10px;height:26mm;padding:8px 12px;font-size:10.5px;color:#777}
+  .legal{margin-top:14px;font-size:9.5px;color:#888;border-top:1px solid #e3e3e3;padding-top:8px}
+  @media print{.noprint{display:none !important}.pg{padding:0}}
+</style>
+</head>
+<body>
+<div class="pg" id="pg"><p>Cargando…</p></div>
+<script>
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = d => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d || ''); return m ? m[3] + '/' + m[2] + '/' + m[1] : ''; };
+(async function () {
+  const root = document.getElementById('pg');
+  try {
+    const me = await fetch('/api/me', { credentials: 'same-origin' }).then(r => r.json());
+    if (!me.user || me.user.role !== 'admin') { root.innerHTML = '<p>Tu sesión ha caducado o no tienes permiso. <a href="/">Entra de nuevo</a>.</p>'; return; }
+    const id = new URLSearchParams(location.search).get('id');
+    const r = await fetch('/api/deliveries/' + encodeURIComponent(id), { credentials: 'same-origin' });
+    if (!r.ok) { root.innerHTML = '<p>No se encontró el albarán.</p>'; return; }
+    const d = await r.json(), co = d.company, cl = d.client, t = d.totals;
+    document.title = d.code + ' · ' + cl.name;
+    const coLine1 = [co.name, co.cif ? 'CIF ' + co.cif : ''].filter(Boolean).join(' · ');
+    const coLine2 = [[co.address, [co.postal, co.city].filter(Boolean).join(' ')].filter(Boolean).join(', '), co.phone, co.email].filter(Boolean).join(' · ');
+    const clAddr = [cl.address, [cl.postal_code, cl.city].filter(Boolean).join(' '), cl.province].filter(Boolean).join(', ');
+    const initials = n => String(n).split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+    const crest = cl.crest ? `<img class="crest" src="/crests/${esc(cl.crest)}" alt="">` : `<div class="crest ph" style="background:${esc(cl.color || '#d4af37')}">${esc(initials(cl.name))}</div>`;
+    const sub = l => [l.detail, [l.size ? 'talla ' + l.size : '', l.color].filter(Boolean).join(' · ')].filter(Boolean);
+    // agrupar: packs (por bloque) y sueltos
+    const groups = [], seen = new Map();
+    d.lines.forEach(l => {
+      const k = l.kind === 'pack' ? 'p' + l.group_no : 'loose';
+      if (!seen.has(k)) { seen.set(k, { title: l.kind === 'pack' ? l.pack_name : 'Productos sueltos', rows: [] }); groups.push(seen.get(k)); }
+      seen.get(k).rows.push(l);
+    });
+    const row = l => `<tr><td>${esc(l.product_name)}${l.kind === 'free' ? ' <span class="sub">(fuera de catálogo)</span>' : ''}${l.detail ? `<div class="sub">${esc(l.detail)}</div>` : ''}</td><td>${esc(l.size || '–')}</td><td>${esc(l.color || '–')}</td><td class="c">${l.ordered}</td><td class="c">${l.before}</td><td class="c now">${l.now}</td><td class="c ${l.pending ? 'pend' : 'done'}">${l.pending}</td></tr>`;
+    const state = d.final ? 'Entrega final · todo entregado' : 'Entrega parcial nº ' + d.number;
+    root.innerHTML = `
+    <div class="noprint"><span style="color:#666">Para guardar el PDF, en la ventana de impresión elige «Guardar como PDF».</span><button onclick="window.print()">Imprimir o guardar PDF</button></div>
+    <div class="top">
+      <div><img class="logo" src="/img/logo-negro.png" alt="MSH"><div class="co">${esc(coLine1)}<br>${esc(coLine2)}</div></div>
+      <div class="doc"><h1>Albarán de entrega</h1><div class="no">${esc(d.code)}</div><span class="st">${esc(state)}</span></div>
+    </div>
+    <div class="meta">
+      <div class="box cl">${crest}<div><span>Cliente</span><b>${esc(cl.name)}</b>${clAddr ? `<div class="sub">${esc(clAddr)}</div>` : ''}</div></div>
+      <div class="box"><span>Pedido</span><b>Nº ${esc(d.order.number)}${d.order.title ? ' · ' + esc(d.order.title) : ''}</b><div class="sub">Realizado el ${fmt(d.order.order_date)}</div></div>
+      <div class="box"><span>Fecha de entrega</span><b>${fmt(d.delivered_at)}</b>${d.delivered_by ? `<div class="sub">Entregado por: ${esc(d.delivered_by)}</div>` : ''}</div>
+    </div>
+    <h2>Artículos entregados</h2>
+    <table><thead><tr><th style="width:36%">Artículo</th><th>Talla</th><th>Color</th><th class="c">Pedidas</th><th class="c">Ya entregadas</th><th class="c now">Esta entrega</th><th class="c">Pendientes</th></tr></thead><tbody>
+    ${groups.map(g => `<tr class="grp"><td colspan="7">${esc(g.title)}</td></tr>${g.rows.map(row).join('')}`).join('')}</tbody></table>
+    <div class="resumen">
+      <div class="box"><span>Pedidas en total</span><b>${t.ordered}</b></div>
+      <div class="box"><span>Entregadas en este albarán</span><b>${t.now}</b></div>
+      <div class="box"><span>Entregadas antes</span><b>${t.before}</b></div>
+      <div class="box" style="border-color:#d4af37"><span>Pendientes de entregar</span><b style="color:${t.pending ? '#a35a00' : '#2e7d57'}">${t.pending}</b></div>
+    </div>
+    ${d.pending.length ? `<h2>Pendiente de entregar</h2><table><thead><tr><th>Artículo</th><th>Talla</th><th>Color</th><th class="c">Uds.</th></tr></thead><tbody>
+      ${d.pending.map(p => `<tr><td>${esc(p.product_name)}${p.pack_name ? ' <span class="sub">(' + esc(p.pack_name) + ')</span>' : ''}${p.detail ? `<div class="sub">${esc(p.detail)}</div>` : ''}</td><td>${esc(p.size || '–')}</td><td>${esc(p.color || '–')}</td><td class="c pend">${p.qty}</td></tr>`).join('')}</tbody></table>` : ''}
+    ${d.notes ? `<p class="sub" style="margin-top:12px"><b>Observaciones:</b> ${esc(d.notes)}</p>` : ''}
+    <div class="firmas"><div class="firma">Entrega · ${esc(co.name || 'MSH')}<br>Nombre y firma</div><div class="firma">Recibí conforme · ${esc(cl.name)}<br>Nombre, DNI y firma</div></div>
+    <div class="legal">Albarán de entrega nº ${esc(d.code)} del pedido nº ${esc(d.order.number)}.${d.pending.length ? ' La mercancía pendiente se entregará en albaranes posteriores.' : ''} Este albarán no incluye importes.</div>`;
+    if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch (e) { /* da igual */ } }
+  } catch (e) { root.innerHTML = '<p>No se pudo preparar el albarán: ' + esc(e.message) + '</p>'; }
+})();
+</script>
+</body>
+</html>

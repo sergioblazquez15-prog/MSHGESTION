@@ -84,6 +84,9 @@ function loadOrder(id) {
   o.phases = db.prepare(
     'SELECT id,sort,name,min_days,max_days,descr,color,enabled FROM order_phases WHERE order_id=? ORDER BY sort,id'
   ).all(id).map(p => ({ ...p, enabled: !!p.enabled }));
+  o.invoiced = !!o.invoiced;
+  const inv = db.prepare('SELECT doc_type,number,invoice_date FROM invoices WHERE order_id=? ORDER BY id DESC LIMIT 1').get(id);
+  o.invoice_number = inv ? inv.doc_type + '-' + String(inv.number).padStart(6, '0') : '';
   o.docs = db.prepare('SELECT id,kind,filename,size,uploaded_at FROM documents WHERE order_id=? ORDER BY id').all(id);
   o.log = db.prepare('SELECT at,what,by_user FROM status_log WHERE order_id=? ORDER BY id DESC').all(id);
   const en = o.phases.filter(p => p.enabled);
@@ -99,6 +102,7 @@ function present(user, o) {
   const out = { ...o, docs: o.docs.filter(d => d.kind !== 'pedido'), log: [] };
   // los clientes no ven precios
   delete out.total; delete out.iva; delete out.total_iva; delete out.unpriced;
+  delete out.invoiced; delete out.invoiced_at; delete out.invoice_ref; delete out.invoice_number;
   out.lines = o.lines.map(l => {
     const { unit_price, pack_price, amount, ...rest } = l;
     return { ...rest, finishes: l.finishes.map(({ price, ...f }) => f) };
@@ -112,29 +116,39 @@ function present(user, o) {
 const canSee = (user, o) => user && (user.role === 'admin' || user.client_id === o.client_id);
 
 /* ---------- catálogo ---------- */
+/* códigos de artículo para FactuSOL (máx. 13 caracteres, sin espacios) */
+const FREE_CODE = 'LIBRE';
+const cleanCode = v => String(v == null ? '' : v).toUpperCase().replace(/[^A-Z0-9._-]/g, '').slice(0, 13);
+function genCode(prefix, used) {
+  let n = parseInt(getSetting('codeseq_' + prefix, '0'), 10) || 0, c;
+  do { n++; c = prefix + String(n).padStart(5, '0'); } while (used.has(c));
+  setSetting('codeseq_' + prefix, n); used.add(c);
+  return c;
+}
+
 function catalogOf(clientId) {
-  const finishes = db.prepare('SELECT id,name,asks_value,value_label,price FROM finishes WHERE client_id=? ORDER BY sort,id').all(clientId);
+  const finishes = db.prepare('SELECT id,name,asks_value,value_label,price,code FROM finishes WHERE client_id=? ORDER BY sort,id').all(clientId);
   const fById = new Map(finishes.map(f => [f.id, f]));
-  const prods = db.prepare('SELECT id,name,sizes,price,photo FROM products WHERE client_id=? ORDER BY sort,id').all(clientId);
+  const prods = db.prepare('SELECT id,name,sizes,price,photo,code FROM products WHERE client_id=? ORDER BY sort,id').all(clientId);
   const pf = db.prepare(
     'SELECT product_id,finish_id,mode FROM product_finishes WHERE product_id IN (SELECT id FROM products WHERE client_id=?)'
   ).all(clientId);
   const products = prods.map(p => {
     const fm = {};
     pf.filter(x => x.product_id === p.id).forEach(x => { const f = fById.get(x.finish_id); if (f) fm[f.name] = x.mode; });
-    return { name: p.name, sizes: p.sizes, price: p.price, photo: p.photo || '', finishes: fm };
+    return { name: p.name, sizes: p.sizes, price: p.price, photo: p.photo || '', code: p.code || '', finishes: fm };
   });
   const pById = new Map(prods.map(p => [p.id, p.name]));
-  const packRows = db.prepare('SELECT id,name,price FROM packs WHERE client_id=? ORDER BY sort,id').all(clientId);
+  const packRows = db.prepare('SELECT id,name,price,code FROM packs WHERE client_id=? ORDER BY sort,id').all(clientId);
   const items = db.prepare(
     'SELECT pack_id,product_id FROM pack_items WHERE pack_id IN (SELECT id FROM packs WHERE client_id=?) ORDER BY sort'
   ).all(clientId);
   const packs = packRows.map(p => ({
-    name: p.name, price: p.price,
+    name: p.name, price: p.price, code: p.code || '',
     items: items.filter(i => i.pack_id === p.id).map(i => pById.get(i.product_id)).filter(Boolean)
   }));
   return {
-    finishes: finishes.map(f => ({ name: f.name, asks_value: !!f.asks_value, value_label: f.value_label || '', price: f.price })),
+    finishes: finishes.map(f => ({ name: f.name, asks_value: !!f.asks_value, value_label: f.value_label || '', price: f.price, code: f.code || '' })),
     products, packs
   };
 }
@@ -340,10 +354,13 @@ app.put('/api/clients/:id', auth.requireAdmin, (req, res) => {
   const c = db.prepare('SELECT * FROM clients WHERE id=?').get(req.params.id);
   if (!c) throw bad('Cliente no encontrado', 404);
   const b = req.body;
-  db.prepare('UPDATE clients SET name=?,color=?,allow_packs=?,allow_products=?,allow_free=?,active=?,can_order=? WHERE id=?').run(
+  db.prepare('UPDATE clients SET name=?,color=?,allow_packs=?,allow_products=?,allow_free=?,active=?,can_order=?,factusol_code=?,tax_id=?,address=?,postal_code=?,city=?,province=? WHERE id=?').run(
     clean(b.name, 120) || c.name, isHex(b.color) ? b.color : c.color,
     b.allow_packs ? 1 : 0, b.allow_products ? 1 : 0, b.allow_free ? 1 : 0, b.active === false ? 0 : 1,
-    b.can_order === undefined ? c.can_order : (b.can_order ? 1 : 0), c.id
+    b.can_order === undefined ? c.can_order : (b.can_order ? 1 : 0),
+    b.factusol_code === undefined ? c.factusol_code : clean(b.factusol_code, 6).replace(/\D/g, ''),
+    ...['tax_id', 'address', 'postal_code', 'city', 'province'].map(k => b[k] === undefined ? c[k] : clean(b[k], k === 'address' ? 100 : 40)),
+    c.id
   );
   res.json(db.prepare('SELECT * FROM clients WHERE id=?').get(c.id));
 });
@@ -432,17 +449,17 @@ app.put('/api/clients/:id/catalog', auth.requireAdmin, (req, res) => {
   if (!db.prepare('SELECT 1 FROM clients WHERE id=?').get(cid)) throw bad('Cliente no encontrado', 404);
   const b = req.body || {};
   const finishes = (b.finishes || []).map(f => ({
-    name: clean(f.name, 100), asks_value: f.asks_value ? 1 : 0, value_label: clean(f.value_label, 60), price: money(f.price)
+    name: clean(f.name, 100), asks_value: f.asks_value ? 1 : 0, value_label: clean(f.value_label, 60), price: money(f.price), code: cleanCode(f.code)
   })).filter(f => f.name);
   const products = (b.products || []).map(p => ({
     name: clean(p.name, 150),
     sizes: String(p.sizes || '').split(',').map(s => s.trim()).filter(Boolean).join(','),
-    price: money(p.price),
+    price: money(p.price), code: cleanCode(p.code),
     photo: validPhoto(p.photo), finishes: p.finishes || {}
   })).filter(p => p.name);
   const packs = (b.packs || []).map(p => ({
     name: clean(p.name, 150),
-    price: money(p.price),
+    price: money(p.price), code: cleanCode(p.code),
     items: Array.isArray(p.items) ? p.items : []
   })).filter(p => p.name);
   const dup = arr => arr.find((x, i) => arr.findIndex(y => y.name.toLowerCase() === x.name.toLowerCase()) !== i);
@@ -455,23 +472,31 @@ app.put('/api/clients/:id/catalog', auth.requireAdmin, (req, res) => {
     db.prepare('DELETE FROM packs WHERE client_id=?').run(cid);
     db.prepare('DELETE FROM products WHERE client_id=?').run(cid);
     db.prepare('DELETE FROM finishes WHERE client_id=?').run(cid);
+    // códigos de artículo (FactuSOL): los que ya vienen se respetan, los vacíos se generan
+    const used = new Set();
+    ['finishes', 'products', 'packs'].forEach(t => db.prepare("SELECT code FROM " + t + " WHERE code<>''").all().forEach(r => used.add(r.code.toUpperCase())));
+    used.add(FREE_CODE);
+    [...finishes, ...products, ...packs].forEach(x => { if (x.code) { if (used.has(x.code.toUpperCase())) throw bad('Código de artículo repetido: ' + x.code); used.add(x.code.toUpperCase()); } });
+    finishes.forEach(x => { if (!x.code) x.code = genCode('ACB', used); });
+    products.forEach(x => { if (!x.code) x.code = genCode('PRD', used); });
+    packs.forEach(x => { if (!x.code) x.code = genCode('PCK', used); });
     const fId = new Map(), pId = new Map();
-    const insF = db.prepare('INSERT INTO finishes(client_id,name,asks_value,value_label,sort,price) VALUES (?,?,?,?,?,?)');
-    finishes.forEach((f, i) => fId.set(f.name, insF.run(cid, f.name, f.asks_value, f.value_label, i, f.price).lastInsertRowid));
-    const insP = db.prepare('INSERT INTO products(client_id,name,sizes,price,sort,photo) VALUES (?,?,?,?,?,?)');
+    const insF = db.prepare('INSERT INTO finishes(client_id,name,asks_value,value_label,sort,price,code) VALUES (?,?,?,?,?,?,?)');
+    finishes.forEach((f, i) => fId.set(f.name, insF.run(cid, f.name, f.asks_value, f.value_label, i, f.price, f.code).lastInsertRowid));
+    const insP = db.prepare('INSERT INTO products(client_id,name,sizes,price,sort,photo,code) VALUES (?,?,?,?,?,?,?)');
     const insPF = db.prepare('INSERT INTO product_finishes(product_id,finish_id,mode) VALUES (?,?,?)');
     products.forEach((p, i) => {
-      const id = insP.run(cid, p.name, p.sizes, p.price, i, p.photo).lastInsertRowid;
+      const id = insP.run(cid, p.name, p.sizes, p.price, i, p.photo, p.code).lastInsertRowid;
       pId.set(p.name, id);
       Object.keys(p.finishes).forEach(fn => {
         const mode = p.finishes[fn];
         if ((mode === 'fixed' || mode === 'optional') && fId.has(fn)) insPF.run(id, fId.get(fn), mode);
       });
     });
-    const insK = db.prepare('INSERT INTO packs(client_id,name,price,sort) VALUES (?,?,?,?)');
+    const insK = db.prepare('INSERT INTO packs(client_id,name,price,sort,code) VALUES (?,?,?,?,?)');
     const insKI = db.prepare('INSERT INTO pack_items(pack_id,product_id,sort) VALUES (?,?,?)');
     packs.forEach((p, i) => {
-      const id = insK.run(cid, p.name, p.price, i).lastInsertRowid;
+      const id = insK.run(cid, p.name, p.price, i, p.code).lastInsertRowid;
       p.items.forEach((pn, j) => { if (pId.has(pn)) insKI.run(id, pId.get(pn), j); });
     });
   })();
@@ -661,6 +686,22 @@ app.post('/api/orders/:id/docs', auth.requireAdmin, docUpload.single('file'), (r
   db.prepare('INSERT INTO documents(order_id,kind,filename,stored,size) VALUES (?,?,?,?,?)')
     .run(o.id, kind, clean(req.file.originalname, 200), req.file.filename, req.file.size);
   logStatus(o.id, (kind === 'factura' ? 'Factura' : kind === 'pedido' ? 'Pedido inicial' : 'Albarán') + ' subido', req.user);
+  if (kind === 'factura') {
+    // al subir la factura, el pedido pasa a facturado solo
+    const cur = db.prepare('SELECT invoiced FROM orders WHERE id=?').get(o.id);
+    if (!cur.invoiced) {
+      db.prepare("UPDATE orders SET invoiced=1, invoiced_at=? WHERE id=?").run(todayStr(), o.id);
+      logStatus(o.id, 'Marcado como facturado (factura subida)', req.user);
+    }
+  }
+  res.json(loadOrder(o.id));
+});
+app.post('/api/orders/:id/invoiced', auth.requireAdmin, (req, res) => {
+  const o = db.prepare('SELECT id,invoiced FROM orders WHERE id=?').get(req.params.id);
+  if (!o) throw bad('Pedido no encontrado', 404);
+  const on = !!req.body.invoiced;
+  db.prepare('UPDATE orders SET invoiced=?, invoiced_at=?, invoice_ref=? WHERE id=?').run(on ? 1 : 0, on ? todayStr() : null, on ? clean(req.body.ref, 60) : '', o.id);
+  if (on !== !!o.invoiced) logStatus(o.id, on ? 'Marcado como facturado' : 'Marcado como pendiente de facturar', req.user);
   res.json(loadOrder(o.id));
 });
 app.get('/api/docs/:id', auth.requireUser, (req, res) => {
@@ -675,6 +716,171 @@ app.delete('/api/docs/:id', auth.requireAdmin, (req, res) => {
     fs.unlink(path.join(DATA, 'uploads', d.stored), () => {});
   }
   res.json({ ok: true });
+});
+
+/* ---------- albaranes de entrega (parciales, sin importes) ---------- */
+const lineDetail = l => l.finishes.map(f => f.name + (f.value ? ' ' + f.value : '')).join(' · ');
+const lineKey = l => [l.kind, l.pack_name || '', l.group_no || 0, l.product_name, l.size || '', l.color || '', lineDetail(l)].join('|');
+// Une las líneas iguales del pedido y calcula lo entregado hasta cierto albarán (upTo = id; sin él, todos)
+function deliveryPlan(o, upToId) {
+  const items = new Map();
+  o.lines.forEach(l => {
+    const k = lineKey(l);
+    const it = items.get(k) || { key: k, kind: l.kind, pack_name: l.pack_name || '', group_no: l.group_no || 0, product_name: l.product_name, size: l.size || '', color: l.color || '', detail: lineDetail(l), ordered: 0, delivered: 0 };
+    it.ordered += l.qty; items.set(k, it);
+  });
+  const rows = db.prepare('SELECT dl.line_key AS k, SUM(dl.qty) AS q FROM delivery_lines dl JOIN deliveries d ON d.id=dl.delivery_id WHERE d.order_id=?' + (upToId ? ' AND d.id<=?' : '') + ' GROUP BY dl.line_key').all(...(upToId ? [o.id, upToId] : [o.id]));
+  rows.forEach(r => { const it = items.get(r.k); if (it) it.delivered = r.q; });
+  const list = [...items.values()].map(it => ({ ...it, pending: Math.max(0, it.ordered - it.delivered) }));
+  return list;
+}
+const deliveryCode = d => 'ALB-' + d.year + '-' + String(d.seq).padStart(4, '0');
+function deliveryList(orderId) {
+  return db.prepare('SELECT d.*, (SELECT COALESCE(SUM(qty),0) FROM delivery_lines WHERE delivery_id=d.id) AS units FROM deliveries d WHERE order_id=? ORDER BY d.id').all(orderId)
+    .map(d => ({ id: d.id, code: deliveryCode(d), delivered_at: d.delivered_at, delivered_by: d.delivered_by, notes: d.notes, units: d.units }));
+}
+app.get('/api/orders/:id/deliveries', auth.requireAdmin, (req, res) => {
+  const o = loadOrder(Number(req.params.id));
+  if (!o) throw bad('Pedido no encontrado', 404);
+  res.json({ items: deliveryPlan(o), deliveries: deliveryList(o.id) });
+});
+app.post('/api/orders/:id/deliveries', auth.requireAdmin, (req, res) => {
+  const o = loadOrder(Number(req.params.id));
+  if (!o) throw bad('Pedido no encontrado', 404);
+  const b = req.body || {};
+  const plan = new Map(deliveryPlan(o).map(i => [i.key, i]));
+  const want = (Array.isArray(b.lines) ? b.lines : []).map(l => ({ key: String(l.key), qty: parseInt(l.qty, 10) || 0 })).filter(l => l.qty > 0);
+  if (!want.length) throw bad('Marca al menos una unidad para entregar');
+  const seen = new Set();
+  want.forEach(l => {
+    const it = plan.get(l.key);
+    if (!it) throw bad('Hay un artículo que ya no está en el pedido. Recarga la página.');
+    if (seen.has(l.key)) throw bad('Artículo repetido en el albarán');
+    seen.add(l.key);
+    if (l.qty > it.pending) throw bad('«' + it.product_name + '» ' + (it.size ? 'talla ' + it.size + ' ' : '') + ': solo quedan ' + it.pending + ' por entregar');
+  });
+  const at = isDate(b.delivered_at) ? b.delivered_at : todayStr();
+  const year = Number(at.slice(0, 4));
+  const id = db.transaction(() => {
+    const seq = (db.prepare('SELECT MAX(seq) AS m FROM deliveries WHERE year=?').get(year).m || 0) + 1;
+    const did = db.prepare('INSERT INTO deliveries(order_id,year,seq,delivered_at,delivered_by,notes) VALUES (?,?,?,?,?,?)')
+      .run(o.id, year, seq, at, clean(b.delivered_by, 80) || (req.user.name || req.user.email), clean(b.notes, 300)).lastInsertRowid;
+    const ins = db.prepare('INSERT INTO delivery_lines(delivery_id,line_key,kind,pack_name,group_no,product_name,size,color,detail,qty) VALUES (?,?,?,?,?,?,?,?,?,?)');
+    want.forEach(l => { const it = plan.get(l.key); ins.run(did, it.key, it.kind, it.pack_name, it.group_no, it.product_name, it.size, it.color, it.detail, l.qty); });
+    logStatus(o.id, 'Albarán de entrega ' + 'ALB-' + year + '-' + String(seq).padStart(4, '0') + ' (' + want.reduce((a, l) => a + l.qty, 0) + ' uds)', req.user);
+    return did;
+  })();
+  res.json({ id });
+});
+app.delete('/api/deliveries/:id', auth.requireAdmin, (req, res) => {
+  const d = db.prepare('SELECT * FROM deliveries WHERE id=?').get(req.params.id);
+  if (!d) throw bad('Albarán no encontrado', 404);
+  db.prepare('DELETE FROM deliveries WHERE id=?').run(d.id);
+  logStatus(d.order_id, 'Albarán de entrega ' + deliveryCode(d) + ' eliminado', req.user);
+  res.json({ ok: true });
+});
+// datos para imprimir (ninguna cifra de dinero)
+app.get('/api/deliveries/:id', auth.requireAdmin, (req, res) => {
+  const d = db.prepare('SELECT * FROM deliveries WHERE id=?').get(req.params.id);
+  if (!d) throw bad('Albarán no encontrado', 404);
+  const o = loadOrder(d.order_id);
+  const c = db.prepare('SELECT * FROM clients WHERE id=?').get(o.client_id);
+  const plan = deliveryPlan(o, d.id);          // estado hasta este albarán incluido
+  const before = new Map(deliveryPlan(o, d.id - 1 > 0 ? d.id - 1 : -1).map(i => [i.key, i.delivered]));
+  const mine = new Map(db.prepare('SELECT line_key AS k, qty FROM delivery_lines WHERE delivery_id=?').all(d.id).map(r => [r.k, r.qty]));
+  const lines = plan.filter(i => mine.has(i.key)).map(i => ({ pack_name: i.pack_name, group_no: i.group_no, kind: i.kind, product_name: i.product_name, size: i.size, color: i.color, detail: i.detail, ordered: i.ordered, before: before.get(i.key) || 0, now: mine.get(i.key), pending: i.pending }));
+  const pending = plan.filter(i => i.pending > 0).map(i => ({ pack_name: i.pack_name, product_name: i.product_name, size: i.size, color: i.color, detail: i.detail, qty: i.pending }));
+  const all = deliveryList(o.id);
+  res.json({
+    code: deliveryCode(d), delivered_at: d.delivered_at, delivered_by: d.delivered_by, notes: d.notes,
+    number: all.findIndex(x => x.id === d.id) + 1, final: pending.length === 0,
+    company: { name: getSetting('company_name'), cif: getSetting('company_cif'), address: getSetting('company_address'), postal: getSetting('company_postal'), city: getSetting('company_city'), phone: getSetting('company_phone'), email: getSetting('company_email') },
+    client: { name: c.name, crest: c.crest || '', color: c.color, address: c.address, postal_code: c.postal_code, city: c.city, province: c.province },
+    order: { id: o.id, number: o.number, title: o.title || '', order_date: o.order_date },
+    lines, pending,
+    totals: { ordered: plan.reduce((a, i) => a + i.ordered, 0), now: lines.reduce((a, l) => a + l.now, 0), before: [...before.values()].reduce((a, v) => a + v, 0), pending: pending.reduce((a, p) => a + p.qty, 0) }
+  });
+});
+
+/* ---------- exportación a FactuSOL (FAC + LFA) ---------- */
+const factusol = require('./factusol');
+const { xlsx, zip: zipFiles } = require('./xlsx');
+const invNo = (t, n) => t + '-' + String(n).padStart(6, '0');
+function invoiceState(orderId) {
+  const inv = db.prepare('SELECT * FROM invoices WHERE order_id=? ORDER BY id DESC LIMIT 1').get(orderId);
+  return inv ? { doc_type: inv.doc_type, number: inv.number, code: invNo(inv.doc_type, inv.number), date: inv.invoice_date } : null;
+}
+app.get('/api/orders/:id/factusol', auth.requireAdmin, (req, res) => {
+  const o = loadOrder(Number(req.params.id));
+  if (!o) throw bad('Pedido no encontrado', 404);
+  const c = db.prepare('SELECT factusol_code,tax_id,address,city FROM clients WHERE id=?').get(o.client_id);
+  const next = parseInt(getSetting('invoice_next', '207'), 10) || 207, dt = parseInt(getSetting('invoice_doc_type', '1'), 10);
+  const issues = [];
+  if (!c.factusol_code) issues.push('Falta el código de cliente de FactuSOL (ficha del cliente).');
+  if (!c.tax_id) issues.push('Falta el NIF del cliente (ficha del cliente).');
+  if (o.unpriced) issues.push('Hay ' + o.unpriced + ' línea(s) sin precio.');
+  res.json({ invoice: invoiceState(o.id), next_code: invNo(dt, next), issues, blocking: !c.factusol_code });
+});
+app.post('/api/orders/:id/factusol', auth.requireAdmin, (req, res) => {
+  const o = loadOrder(Number(req.params.id));
+  if (!o) throw bad('Pedido no encontrado', 404);
+  const client = db.prepare('SELECT * FROM clients WHERE id=?').get(o.client_id);
+  if (!client.factusol_code) throw bad('Falta el código de cliente de FactuSOL. Ponlo en la ficha del cliente.');
+  const date = isDate(req.body && req.body.date) ? req.body.date : todayStr();
+  const codes = { prod: new Map(), pack: new Map(), fin: new Map() };
+  db.prepare('SELECT name,code FROM products WHERE client_id=? AND code<>\'\'').all(client.id).forEach(r => codes.prod.set(r.name, r.code));
+  db.prepare('SELECT name,code FROM packs WHERE client_id=? AND code<>\'\'').all(client.id).forEach(r => codes.pack.set(r.name, r.code));
+  db.prepare('SELECT name,code FROM finishes WHERE client_id=? AND code<>\'\'').all(client.id).forEach(r => codes.fin.set(r.name, r.code));
+  const dt = parseInt(getSetting('invoice_doc_type', '1'), 10);
+  let inv = db.prepare('SELECT * FROM invoices WHERE order_id=? ORDER BY id DESC LIMIT 1').get(o.id);
+  let out;
+  db.transaction(() => {
+    if (!inv) {                                              // primera exportación del pedido: se reserva el siguiente número
+      const n = parseInt(getSetting('invoice_next', '207'), 10) || 207;
+      out = factusol.build(o, { client, docType: dt, number: n, date, payCode: getSetting('invoice_pay_code'), codes, freeCode: FREE_CODE });
+      db.prepare('INSERT INTO invoices(order_id,doc_type,number,invoice_date,base,iva,total,created_by) VALUES (?,?,?,?,?,?,?,?)')
+        .run(o.id, dt, n, date, out.base, out.iva, out.total, req.user.name || req.user.email);
+      setSetting('invoice_next', n + 1);
+      logStatus(o.id, 'Exportada a FactuSOL como factura ' + invNo(dt, n), req.user);
+      inv = { doc_type: dt, number: n };
+    } else {                                                 // repetir la descarga: mismo número
+      out = factusol.build(o, { client, docType: inv.doc_type, number: inv.number, date: inv.invoice_date, payCode: getSetting('invoice_pay_code'), codes, freeCode: FREE_CODE });
+      db.prepare('UPDATE invoices SET base=?,iva=?,total=? WHERE id=?').run(out.base, out.iva, out.total, inv.id);
+    }
+  })();
+  const zipBuf = zipFiles([
+    { name: 'FAC.xlsx', data: xlsx(out.facRows, 'FAC') },
+    { name: 'LFA.xlsx', data: xlsx(out.lfaRows, 'LFA') }
+  ]);
+  res.set('X-Invoice', invNo(inv.doc_type, inv.number));
+  res.set('X-Warnings', encodeURIComponent(out.warnings.join(' | ')));
+  res.set('Access-Control-Expose-Headers', 'X-Invoice, X-Warnings');
+  res.set('Content-Type', 'application/zip');
+  res.set('Content-Disposition', 'attachment; filename="factusol-' + invNo(inv.doc_type, inv.number) + '.zip"');
+  res.end(zipBuf);
+});
+// liberar el número si fue el último reservado (por ejemplo, si se exportó por error)
+app.delete('/api/orders/:id/factusol', auth.requireAdmin, (req, res) => {
+  const inv = db.prepare('SELECT * FROM invoices WHERE order_id=? ORDER BY id DESC LIMIT 1').get(req.params.id);
+  if (!inv) throw bad('Este pedido no tiene número de factura reservado');
+  const next = parseInt(getSetting('invoice_next', '207'), 10);
+  db.transaction(() => {
+    db.prepare('DELETE FROM invoices WHERE id=?').run(inv.id);
+    if (inv.number === next - 1) setSetting('invoice_next', inv.number);
+    logStatus(inv.order_id, 'Anulada la exportación ' + invNo(inv.doc_type, inv.number), req.user);
+  })();
+  res.json({ ok: true, released: inv.number === next - 1 });
+});
+// listado de códigos de artículo para dar de alta en FactuSOL
+app.get('/api/factusol/articles', auth.requireAdmin, (req, res) => {
+  const rows = [['Código', 'Descripción', 'Tipo', 'Cliente', 'Precio sin IVA']];
+  rows.push([FREE_CODE, 'Artículo fuera de catálogo', 'Libre', '', null]);
+  [['packs', 'Pack'], ['products', 'Producto'], ['finishes', 'Acabado']].forEach(([t, lab]) =>
+    db.prepare('SELECT x.code,x.name,x.price,c.name AS cn FROM ' + t + ' x JOIN clients c ON c.id=x.client_id ORDER BY c.sort_order,x.sort,x.id').all()
+      .forEach(r => rows.push([r.code, r.name, lab, r.cn, r.price])));
+  res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.set('Content-Disposition', 'attachment; filename="articulos-msh.xlsx"');
+  res.end(xlsx(rows, 'Artículos'));
 });
 
 /* ---------- fotos (productos y líneas libres) ---------- */
@@ -810,8 +1016,18 @@ function statsData(q) {
   const byProduct = new Map();
   let units = 0, amount = 0, unpriced = 0;
   const clientsSeen = new Set();
+  const bill = { invoiced: 0, pending: 0, invoiced_orders: 0, pending_orders: 0, by_client: new Map(), pending_list: [] };
 
   orders.forEach(o => {
+    {
+      const bc = bill.by_client.get(o.client_id) || { id: o.client_id, name: o.client_name, invoiced: 0, pending: 0, invoiced_orders: 0, pending_orders: 0 };
+      if (o.invoiced) { bill.invoiced = r2(bill.invoiced + o.total); bill.invoiced_orders++; bc.invoiced = r2(bc.invoiced + o.total); bc.invoiced_orders++; }
+      else {
+        bill.pending = r2(bill.pending + o.total); bill.pending_orders++; bc.pending = r2(bc.pending + o.total); bc.pending_orders++;
+        bill.pending_list.push({ id: o.id, number: o.number, title: o.title || '', client: o.client_name, date: o.order_date, status: o.status, amount: o.total, unpriced: o.unpriced });
+      }
+      bill.by_client.set(o.client_id, bc);
+    }
     const m = o.order_date.slice(0, 7);
     monthSet.add(m);
     clientsSeen.add(o.client_id);
@@ -864,6 +1080,7 @@ function statsData(q) {
     cats: CATS.map(c => ({ cat: c, ...byCat.get(c) })),
     clients: [...byClient.values()].sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name)),
     products: [...byProduct.values()].map(p => ({ ...p, orders: p.orders.size })).sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name)),
+    billing: { invoiced: bill.invoiced, pending: bill.pending, invoiced_orders: bill.invoiced_orders, pending_orders: bill.pending_orders, by_client: [...bill.by_client.values()].sort((a, b) => b.pending - a.pending || a.name.localeCompare(b.name)), pending_list: bill.pending_list.sort((a, b) => b.amount - a.amount) },
     filter: { clients: ids, from, to, status: q.status || 'all' }
   };
 }
@@ -872,14 +1089,15 @@ app.get('/api/stats', auth.requireAdmin, (req, res) => res.json(statsData(req.qu
 /* ---------- ajustes ---------- */
 app.get('/api/settings', auth.requireAdmin, (req, res) => {
   res.json({
-    brand_name: getSetting('brand_name', 'MSH Madrid'),
+    brand_name: getSetting('brand_name', 'MSH gestión'),
     public_url: getSetting('public_url'),
     notify_email: getSetting('notify_email'),
     smtp_host: getSetting('smtp_host'),
     smtp_port: getSetting('smtp_port', '587'),
     smtp_user: getSetting('smtp_user'),
     smtp_from: getSetting('smtp_from'),
-    smtp_pass_set: !!getSetting('smtp_pass')
+    smtp_pass_set: !!getSetting('smtp_pass'),
+    ...['company_name','company_cif','company_address','company_postal','company_city','company_phone','company_email','invoice_next','invoice_doc_type','invoice_pay_code'].reduce((o, k) => (o[k] = getSetting(k), o), {})
   });
 });
 app.put('/api/settings', auth.requireAdmin, (req, res) => {
@@ -887,13 +1105,16 @@ app.put('/api/settings', auth.requireAdmin, (req, res) => {
   ['brand_name', 'public_url', 'notify_email', 'smtp_host', 'smtp_port', 'smtp_user', 'smtp_from'].forEach(k => {
     if (b[k] != null) setSetting(k, clean(b[k], 200));
   });
+  ['company_name','company_cif','company_address','company_postal','company_city','company_phone','company_email','invoice_pay_code'].forEach(k => { if (b[k] != null) setSetting(k, clean(b[k], 200)); });
+  if (b.invoice_next != null) { const n = parseInt(b.invoice_next, 10); if (!(n >= 1 && n <= 999999)) throw bad('El siguiente número de factura no es válido'); setSetting('invoice_next', n); }
+  if (b.invoice_doc_type != null) { const n = parseInt(b.invoice_doc_type, 10); if (!(n >= 0 && n <= 9)) throw bad('La serie de factura debe ser un dígito'); setSetting('invoice_doc_type', n); }
   if (b.smtp_pass) setSetting('smtp_pass', String(b.smtp_pass));
   res.json({ ok: true });
 });
 app.post('/api/settings/test-email', auth.requireAdmin, wrap(async (req, res) => {
   const to = clean(req.body.to, 120);
   if (!to) throw bad('Escribe un correo de destino');
-  const ok = await mail.send(to, 'Prueba de correo · MSH Pedidos', mail.layout('Funciona', '<p>Este es un correo de prueba de la app de pedidos.</p>'));
+  const ok = await mail.send(to, 'Prueba de correo · MSH gestión', mail.layout('Funciona', '<p>Este es un correo de prueba de la app de pedidos.</p>'));
   const last = db.prepare('SELECT error FROM email_log ORDER BY id DESC LIMIT 1').get();
   res.json({ ok, error: ok ? null : (last && last.error) });
 }));
@@ -911,4 +1132,4 @@ app.onError((err, req, res) => {
   res.status(err.status || 500).json({ error: err.status ? err.message : 'Error interno del servidor' });
 });
 
-app.listen(PORT, '0.0.0.0', () => console.log('MSH Pedidos escuchando en el puerto ' + PORT));
+app.listen(PORT, '0.0.0.0', () => console.log('MSH gestión escuchando en el puerto ' + PORT));

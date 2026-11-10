@@ -44,3 +44,12 @@ La base de datos se actualiza sola al arrancar y antes de migrar guarda una copi
 
 ## Novedades v3.1
 - **Tareas**: lista de pendientes con responsable, fecha máxima y semáforo (verde, naranja si queda 1 día, rojo el último día o vencida). Al marcar el check pasan al registro de realizadas, que se consulta aparte.
+
+## Novedades v4 (MSH gestión)
+- **Nombre y logo**: la app pasa a llamarse **MSH gestión**, con el logo de MSH en el acceso y la cabecera.
+- **Facturado / pendiente de facturar**: etiqueta en la lista, el histórico y la ficha del pedido. Se marca solo al subir la factura en PDF y también a mano. Informes muestra lo facturado, lo pendiente (remanente) por cliente y los pedidos pendientes.
+- **Albarán de entrega parcial** desde el pedido: eliges cuántas unidades entregas de cada artículo y talla, sin importes, con logo de MSH, escudo del cliente, datos de la empresa, firmas y lo que queda pendiente. Numeración ALB-AAAA-NNNN.
+- **Duplicar línea** en productos de catálogo y líneas libres (copia talla, color, unidades y acabados; el dato del acabado, como el dorsal, queda vacío).
+- **Exportar a FactuSOL**: botón en el pedido que descarga un zip con FAC.xlsx (cabecera de la factura) y LFA.xlsx (líneas). Códigos de artículo automáticos y editables (PRD, PCK, ACB; LIBRE para líneas libres). Numeración desde Ajustes (siguiente: 1-000207). Packs: una línea con el precio del pack y sus prendas a 0 €.
+- **Ajustes**: datos de la empresa, serie y siguiente número de factura, forma de pago, y descarga del listado de códigos de artículo.
+- **Clientes**: código de cliente de FactuSOL, NIF y dirección.

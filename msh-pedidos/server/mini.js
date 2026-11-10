@@ -28,6 +28,7 @@ function readBody(req, limit) {
 
 function decorate(res) {
   res.status = c => { res.statusCode = c; return res; };
+  res.set = (k, v) => { res.setHeader(k, v); return res; };
   res.json = obj => {
     const body = Buffer.from(JSON.stringify(obj));
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
