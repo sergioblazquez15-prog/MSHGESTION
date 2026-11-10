@@ -101,7 +101,7 @@ const ico = k => `<svg viewBox="0 0 24 24" aria-hidden="true">${IC[k]}</svg>`;
 /* ===== arranque, acceso y navegación ===== */
 const ADMIN_NAV = [['orders', 'Pedidos'], ['tasks', 'Tareas'], ['hist', 'Histórico'], ['new', 'Nuevo'], ['comercial', 'Comercial'], ['clients', 'Clientes'], ['catalog', 'Catálogo'], ['prod', 'Producción'], ['stats', 'Informes'], ['phases', 'Plazos'], ['settings', 'Ajustes']];
 const CLIENT_NAV = [['new', 'Nuevo pedido'], ['mine', 'Mis pedidos']];
-const NAV_ALIAS = { detail: 'orders', edit: 'orders', client: 'clients' };
+const NAV_ALIAS = { detail: 'orders', edit: 'orders', client: 'clients', albaran: 'orders' };
 
 async function boot() {
   window.addEventListener('hashchange', () => { if (S.me) route(); });

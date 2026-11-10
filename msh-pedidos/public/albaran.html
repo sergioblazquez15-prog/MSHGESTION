@@ -12,6 +12,7 @@
   html,body{background:#fff;color:#141414;margin:0}
   body{font-family:Inter,Helvetica,Arial,sans-serif;font-size:12px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   .pg{width:186mm;max-width:100%;margin:0 auto;padding:6mm 0}
+  .tw{overflow-x:auto}
   .noprint{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap}
   .noprint button{background:#d4af37;border:0;border-radius:999px;padding:9px 18px;font:inherit;font-weight:600;cursor:pointer}
   .top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #d4af37;padding-bottom:12px;gap:16px}
@@ -43,14 +44,34 @@
   .resumen{display:flex;gap:10px;margin-top:14px;break-inside:avoid}
   .resumen .box{flex:1;text-align:center} .resumen b{font-size:18px;font-family:Fraunces,Georgia,serif;font-weight:400;display:block}
   .firmas{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:26px;break-inside:avoid}
-  .firma{border:1px solid #d9d2b3;border-radius:10px;height:26mm;padding:8px 12px;font-size:10.5px;color:#777}
+  .firma{border:1px solid #d9d2b3;border-radius:10px;min-height:26mm;padding:8px 12px;font-size:10.5px;color:#777}
   .legal{margin-top:14px;font-size:9.5px;color:#888;border-top:1px solid #e3e3e3;padding-top:8px}
+  .firma.signed{position:relative;color:#333}
+  .firma.signed img{display:block;max-height:12mm;max-width:100%;margin:2px 0}
+  .signbox{border:1px solid #d4af37;background:#fffdf5;border-radius:14px;padding:16px;margin-top:18px}
+  .signbox h2{margin-top:0}
+  .signbox .f{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  .signbox input{flex:1;min-width:140px;border:1px solid #d9d2b3;border-radius:10px;padding:10px 12px;font:inherit;font-size:15px;background:#fff}
+  #pad{width:100%;height:200px;border:1.5px dashed #b8902a;border-radius:12px;background:#fff;touch-action:none;display:block;cursor:crosshair}
+  .signbox .btns{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap}
+  .signbox button,.okbar button{border:0;border-radius:999px;padding:11px 20px;font:inherit;font-weight:600;font-size:14px;cursor:pointer}
+  .btn-gold{background:#d4af37;color:#111} .btn-ghost{background:#fff !important;border:1px solid #d9d2b3 !important;color:#333 !important}
+  .btn-gold:disabled{opacity:.45;cursor:not-allowed}
+  .okbar{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin:14px 0;padding:10px 14px;border:1px solid #2e7d57;background:#eef8f2;border-radius:12px;color:#1f5c40;font-weight:600}
+  .msg{padding:10px 14px;border-radius:10px;margin:10px 0;font-size:13px}.msg.err{background:#fdecea;color:#8a1f17}
+  @media screen and (max-width:640px){
+    .pg{padding:12px} .top{flex-direction:column} .doc{text-align:left} .doc h1{font-size:22px}
+    .meta{grid-template-columns:1fr} .resumen{flex-wrap:wrap} .resumen .box{min-width:42%}
+    .firmas{grid-template-columns:1fr} .logo{height:12mm} table{font-size:11px} th,td{padding:6px 4px}
+  }
   @media print{.noprint{display:none !important}.pg{padding:0}}
 </style>
 </head>
 <body>
 <div class="pg" id="pg"><p>Cargando…</p></div>
 <script>
+const embed = new URLSearchParams(location.search).get('embed') === '1', wantPrint = new URLSearchParams(location.search).get('print') === '1';
+const fmtDT = t => { const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/.exec(t || ''); return m ? m[3] + '/' + m[2] + '/' + m[1] + ' ' + m[4] : ''; };
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = d => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d || ''); return m ? m[3] + '/' + m[2] + '/' + m[1] : ''; };
 (async function () {
@@ -79,7 +100,9 @@ const fmt = d => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d || ''); return m 
     const row = l => `<tr><td>${esc(l.product_name)}${l.kind === 'free' ? ' <span class="sub">(fuera de catálogo)</span>' : ''}${l.detail ? `<div class="sub">${esc(l.detail)}</div>` : ''}</td><td>${esc(l.size || '–')}</td><td>${esc(l.color || '–')}</td><td class="c">${l.ordered}</td><td class="c">${l.before}</td><td class="c now">${l.now}</td><td class="c ${l.pending ? 'pend' : 'done'}">${l.pending}</td></tr>`;
     const state = d.final ? 'Entrega final · todo entregado' : 'Entrega parcial nº ' + d.number;
     root.innerHTML = `
-    <div class="noprint"><span style="color:#666">Para guardar el PDF, en la ventana de impresión elige «Guardar como PDF».</span><button onclick="window.print()">Imprimir o guardar PDF</button></div>
+    ${d.signed
+      ? `<div class="okbar noprint"><span>✓ Firmado por ${esc(d.signed_name)} el ${esc(fmtDT(d.signed_at))}</span>${embed ? `<button class="btn-gold" onclick="window.open('/albaran.html?id=${esc(id)}&print=1','_blank')">Exportar a PDF</button>` : `<button class="btn-gold" onclick="window.print()">Exportar a PDF</button>`}</div>`
+      : `<div class="msg noprint" style="background:#fbf6e3;color:#6b5410">Este albarán todavía no está firmado. El PDF se podrá exportar cuando el cliente firme.</div>`}
     <div class="top">
       <div><img class="logo" src="/img/logo-negro.png" alt="MSH"><div class="co">${esc(coLine1)}<br>${esc(coLine2)}</div></div>
       <div class="doc"><h1>Albarán de entrega</h1><div class="no">${esc(d.code)}</div><span class="st">${esc(state)}</span></div>
@@ -90,22 +113,65 @@ const fmt = d => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d || ''); return m 
       <div class="box"><span>Fecha de entrega</span><b>${fmt(d.delivered_at)}</b>${d.delivered_by ? `<div class="sub">Entregado por: ${esc(d.delivered_by)}</div>` : ''}</div>
     </div>
     <h2>Artículos entregados</h2>
-    <table><thead><tr><th style="width:36%">Artículo</th><th>Talla</th><th>Color</th><th class="c">Pedidas</th><th class="c">Ya entregadas</th><th class="c now">Esta entrega</th><th class="c">Pendientes</th></tr></thead><tbody>
-    ${groups.map(g => `<tr class="grp"><td colspan="7">${esc(g.title)}</td></tr>${g.rows.map(row).join('')}`).join('')}</tbody></table>
+    <div class="tw"><table><thead><tr><th style="width:36%">Artículo</th><th>Talla</th><th>Color</th><th class="c">Pedidas</th><th class="c">Ya entregadas</th><th class="c now">Esta entrega</th><th class="c">Pendientes</th></tr></thead><tbody>
+    ${groups.map(g => `<tr class="grp"><td colspan="7">${esc(g.title)}</td></tr>${g.rows.map(row).join('')}`).join('')}</tbody></table></div>
     <div class="resumen">
       <div class="box"><span>Pedidas en total</span><b>${t.ordered}</b></div>
       <div class="box"><span>Entregadas en este albarán</span><b>${t.now}</b></div>
       <div class="box"><span>Entregadas antes</span><b>${t.before}</b></div>
       <div class="box" style="border-color:#d4af37"><span>Pendientes de entregar</span><b style="color:${t.pending ? '#a35a00' : '#2e7d57'}">${t.pending}</b></div>
     </div>
-    ${d.pending.length ? `<h2>Pendiente de entregar</h2><table><thead><tr><th>Artículo</th><th>Talla</th><th>Color</th><th class="c">Uds.</th></tr></thead><tbody>
-      ${d.pending.map(p => `<tr><td>${esc(p.product_name)}${p.pack_name ? ' <span class="sub">(' + esc(p.pack_name) + ')</span>' : ''}${p.detail ? `<div class="sub">${esc(p.detail)}</div>` : ''}</td><td>${esc(p.size || '–')}</td><td>${esc(p.color || '–')}</td><td class="c pend">${p.qty}</td></tr>`).join('')}</tbody></table>` : ''}
+    ${d.pending.length ? `<h2>Pendiente de entregar</h2><div class="tw"><table><thead><tr><th>Artículo</th><th>Talla</th><th>Color</th><th class="c">Uds.</th></tr></thead><tbody>
+      ${d.pending.map(p => `<tr><td>${esc(p.product_name)}${p.pack_name ? ' <span class="sub">(' + esc(p.pack_name) + ')</span>' : ''}${p.detail ? `<div class="sub">${esc(p.detail)}</div>` : ''}</td><td>${esc(p.size || '–')}</td><td>${esc(p.color || '–')}</td><td class="c pend">${p.qty}</td></tr>`).join('')}</tbody></table></div>` : ''}
     ${d.notes ? `<p class="sub" style="margin-top:12px"><b>Observaciones:</b> ${esc(d.notes)}</p>` : ''}
-    <div class="firmas"><div class="firma">Entrega · ${esc(co.name || 'MSH')}<br>Nombre y firma</div><div class="firma">Recibí conforme · ${esc(cl.name)}<br>Nombre, DNI y firma</div></div>
+    <div class="firmas"><div class="firma">Entrega · ${esc(co.name || 'MSH')}<br>Nombre y firma</div>${d.signed
+      ? `<div class="firma signed">Recibí conforme · ${esc(cl.name)}<img src="${d.signature}" alt="Firma"><b style="color:#141414">${esc(d.signed_name)}</b>${d.signed_id ? ' · ' + esc(d.signed_id) : ''}<br><span style="font-size:9.5px">Firmado digitalmente el ${esc(fmtDT(d.signed_at))}</span></div>`
+      : `<div class="firma">Recibí conforme · ${esc(cl.name)}<br>Nombre, DNI y firma</div>`}</div>
+    ${d.signed ? '' : `<div class="signbox noprint"><h2>Firma del cliente</h2>
+      <div class="f"><input id="sg-name" placeholder="Nombre de quien recibe *" autocomplete="off"><input id="sg-dni" placeholder="DNI (opcional)" autocomplete="off"></div>
+      <canvas id="pad"></canvas>
+      <div class="mini" style="color:#777;font-size:12px;margin-top:6px">Firma con el dedo dentro del recuadro.</div>
+      <div class="btns"><button class="btn-ghost" onclick="padClear()">Borrar</button><button class="btn-gold" id="sg-ok" onclick="padSend()">Confirmar firma</button></div>
+      <div id="sg-msg"></div></div>`}
     <div class="legal">Albarán de entrega nº ${esc(d.code)} del pedido nº ${esc(d.order.number)}.${d.pending.length ? ' La mercancía pendiente se entregará en albaranes posteriores.' : ''} Este albarán no incluye importes.</div>`;
     if (document.fonts && document.fonts.ready) { try { await document.fonts.ready; } catch (e) { /* da igual */ } }
+    if (!d.signed) padInit(id);
+    if (wantPrint) {
+      if (d.signed) setTimeout(() => window.print(), 400);
+      else root.insertAdjacentHTML('afterbegin', '<div class="msg err noprint">Este albarán aún no está firmado: no se puede exportar a PDF.</div>');
+    }
+    if (embed) { const post = () => parent.postMessage({ albaranHeight: document.documentElement.scrollHeight }, '*'); post(); new ResizeObserver(post).observe(document.body); }
   } catch (e) { root.innerHTML = '<p>No se pudo preparar el albarán: ' + esc(e.message) + '</p>'; }
 })();
+
+// ---- firma con el dedo (táctil y ratón) ----
+let PAD = null;
+function padInit(id) {
+  const cv = document.getElementById('pad'); if (!cv) return;
+  const ratio = Math.max(1, window.devicePixelRatio || 1), w = cv.clientWidth, h = cv.clientHeight;
+  cv.width = w * ratio; cv.height = h * ratio;
+  const cx = cv.getContext('2d'); cx.scale(ratio, ratio); cx.lineWidth = 2.4; cx.lineCap = 'round'; cx.lineJoin = 'round'; cx.strokeStyle = '#111';
+  PAD = { id, cv, cx, drawing: false, pts: 0, last: null };
+  const pos = e => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  cv.addEventListener('pointerdown', e => { e.preventDefault(); cv.setPointerCapture(e.pointerId); PAD.drawing = true; PAD.last = pos(e); cx.beginPath(); cx.arc(PAD.last[0], PAD.last[1], 1.2, 0, 7); cx.fill(); PAD.pts++; });
+  cv.addEventListener('pointermove', e => { if (!PAD.drawing) return; e.preventDefault(); const p = pos(e); cx.beginPath(); cx.moveTo(PAD.last[0], PAD.last[1]); cx.lineTo(p[0], p[1]); cx.stroke(); PAD.last = p; PAD.pts++; });
+  const end = () => { PAD.drawing = false; };
+  cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+}
+function padClear() { if (!PAD) return; PAD.cx.clearRect(0, 0, PAD.cv.width, PAD.cv.height); PAD.pts = 0; }
+async function padSend() {
+  const msg = document.getElementById('sg-msg'), name = document.getElementById('sg-name').value.trim();
+  const err = t => { msg.innerHTML = '<div class="msg err">' + esc(t) + '</div>'; };
+  if (!name) return err('Escribe el nombre de quien recibe la mercancía.');
+  if (!PAD || PAD.pts < 15) return err('Falta la firma: dibújala con el dedo dentro del recuadro.');
+  const btn = document.getElementById('sg-ok'); btn.disabled = true; btn.textContent = 'Guardando…';
+  try {
+    const r = await fetch('/api/deliveries/' + encodeURIComponent(PAD.id) + '/sign', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, dni: document.getElementById('sg-dni').value.trim(), signature: PAD.cv.toDataURL('image/png') }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || 'No se pudo guardar la firma');
+    location.reload();
+  } catch (e) { btn.disabled = false; btn.textContent = 'Confirmar firma'; err(e.message); }
+}
 </script>
 </body>
 </html>

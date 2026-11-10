@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS email_log(
 
 
 /* ---------- Migraciones (conservan todos los datos existentes) ---------- */
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const ver = db.prepare('PRAGMA user_version').get().user_version;
 if (ver < SCHEMA_VERSION) {
   if (existed && ver < SCHEMA_VERSION) {
@@ -318,6 +318,8 @@ if (ver < SCHEMA_VERSION) {
       created_at TEXT NOT NULL DEFAULT (datetime('now')));
     CREATE INDEX IF NOT EXISTS idx_plog ON prospect_log(prospect_id);`);
     ['contact_name', 'phone', 'email'].forEach(c => addCol('clients', c, "TEXT NOT NULL DEFAULT ''"));
+    // v6: firma digital del albarán de entrega
+    ['signature', 'signed_at', 'signed_name', 'signed_id', 'signed_by_user'].forEach(c => addCol('deliveries', c, "TEXT NOT NULL DEFAULT ''"));
   })();
   db.exec('PRAGMA user_version = ' + SCHEMA_VERSION);
 }

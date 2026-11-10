@@ -2,7 +2,7 @@
 /* ===== Comercial: clubes y empresas que aún no son clientes =====
    Semáforo: rojo = sin contactar, amarillo = contactado / negociando, verde = «Pasar a cliente» (pide datos y confirma). */
 const CM = {
-  kind: 'club', limit: 100, list: [], q: '', zone: '', stat: '', open: null, msg: null,
+  kind: 'club', limit: 100, list: [], q: '', zone: '', cat: '', stat: '', open: null, msg: null,
   KINDS: { club: ['Clubes', 'club'], empresa: ['Empresas', 'empresa'] },
   VIAS: [['llamada', 'Llamada'], ['email', 'Email'], ['whatsapp', 'WhatsApp'], ['visita', 'Visita'], ['reunión', 'Reunión'], ['otro', 'Otro']],
   COL: { rojo: '#e5534b', amarillo: '#e3b341', verde: '#3fb27f' },
@@ -21,22 +21,24 @@ const CM = {
     const o = await api('GET', '/api/prospects?kind=' + other);
     return { [CM.kind]: CM.list.length, [other]: o.length };
   },
-  setKind(k) { CM.kind = k; CM.limit = 100; CM.q = ''; CM.zone = ''; CM.stat = ''; CM.msg = null; go('comercial'); },
+  setKind(k) { CM.kind = k; CM.limit = 100; CM.q = ''; CM.zone = ''; CM.cat = ''; CM.stat = ''; CM.msg = null; go('comercial'); },
   paint() { const r = $('cm-root'); if (r) r.innerHTML = CM.listHTML(); },
   dot(s) { return `<span class="cmdot" style="background:${CM.COL[s]}" title="${esc(CM.LAB[s])}"></span>`; },
   rows() {
     const q = CM.q.trim().toLowerCase();
-    return CM.list.filter(p => (!CM.zone || p.zone === CM.zone) && (!CM.stat || p.status === CM.stat) &&
+    return CM.list.filter(p => (!CM.zone || p.zone === CM.zone) && (!CM.cat || p.category === CM.cat) && (!CM.stat || p.status === CM.stat) &&
       (!q || [p.name, p.city, p.zone, p.category, p.phone, p.email, ...p.contacts.map(c => c.name + ' ' + c.email)].join(' ').toLowerCase().includes(q)));
   },
   listHTML() {
-    const all = CM.list, rows = CM.rows(), zones = [...new Set(all.map(p => p.zone).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+    const all = CM.list, rows = CM.rows(), zones = [...new Set(all.map(p => p.zone).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es')),
+      cats = [...new Set(all.map(p => p.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
     const n = s => all.filter(p => p.status === s).length;
     const kn = CM.KINDS[CM.kind][1];
     return `${CM.msg ? `<div class="notice" style="margin-bottom:14px">${CM.msg}</div>` : ''}
     <div class="panel"><div class="bar">
       <input type="text" placeholder="Buscar por nombre, ciudad, contacto…" value="${esc(CM.q)}" style="min-width:240px" oninput="CM.q=this.value;CM.limit=100;CM.paintTable()">
       ${sel('cm-zone', [['', 'Todas las zonas'], ...zones.map(z => [z, z])], CM.zone, 'onchange="CM.zone=this.value;CM.limit=100;CM.paintTable()"')}
+      ${cats.length ? sel('cm-cat', [['', CM.kind === 'club' ? 'Todos los deportes' : 'Todos los sectores'], ...cats.map(z => [z, z])], CM.cat, 'onchange="CM.cat=this.value;CM.limit=100;CM.paintTable()"') : ''}
       <span class="chiprow" style="margin:0"><button class="chip ${!CM.stat ? 'on' : ''}" onclick="CM.setStat('')">Todos (${all.length})</button>
         <button class="chip ${CM.stat === 'rojo' ? 'on' : ''}" onclick="CM.setStat('rojo')">${CM.dot('rojo')} Sin contactar (${n('rojo')})</button>
         <button class="chip ${CM.stat === 'amarillo' ? 'on' : ''}" onclick="CM.setStat('amarillo')">${CM.dot('amarillo')} Negociando (${n('amarillo')})</button></span>

@@ -737,7 +737,7 @@ function deliveryPlan(o, upToId) {
 const deliveryCode = d => 'ALB-' + d.year + '-' + String(d.seq).padStart(4, '0');
 function deliveryList(orderId) {
   return db.prepare('SELECT d.*, (SELECT COALESCE(SUM(qty),0) FROM delivery_lines WHERE delivery_id=d.id) AS units FROM deliveries d WHERE order_id=? ORDER BY d.id').all(orderId)
-    .map(d => ({ id: d.id, code: deliveryCode(d), delivered_at: d.delivered_at, delivered_by: d.delivered_by, notes: d.notes, units: d.units }));
+    .map(d => ({ id: d.id, code: deliveryCode(d), delivered_at: d.delivered_at, delivered_by: d.delivered_by, notes: d.notes, units: d.units, signed: !!d.signature, signed_at: d.signed_at || '' }));
 }
 app.get('/api/orders/:id/deliveries', auth.requireAdmin, (req, res) => {
   const o = loadOrder(Number(req.params.id));
@@ -775,9 +775,26 @@ app.post('/api/orders/:id/deliveries', auth.requireAdmin, (req, res) => {
 app.delete('/api/deliveries/:id', auth.requireAdmin, (req, res) => {
   const d = db.prepare('SELECT * FROM deliveries WHERE id=?').get(req.params.id);
   if (!d) throw bad('Albarán no encontrado', 404);
+  if (d.signature) throw bad('Este albarán ya está firmado y no se puede eliminar');
   db.prepare('DELETE FROM deliveries WHERE id=?').run(d.id);
   logStatus(d.order_id, 'Albarán de entrega ' + deliveryCode(d) + ' eliminado', req.user);
   res.json({ ok: true });
+});
+// firma digital del cliente (dibujada con el dedo en el móvil). Una vez firmado no se puede cambiar.
+app.post('/api/deliveries/:id/sign', auth.requireAdmin, (req, res) => {
+  const d = db.prepare('SELECT * FROM deliveries WHERE id=?').get(req.params.id);
+  if (!d) throw bad('Albarán no encontrado', 404);
+  if (d.signature) throw bad('Este albarán ya está firmado');
+  const b = req.body || {}, sig = String(b.signature || '');
+  if (!/^data:image\/png;base64,[A-Za-z0-9+\/=]+$/.test(sig) || sig.length > 400000) throw bad('La firma no es válida. Vuelve a firmar.');
+  if (Buffer.from(sig.slice(22), 'base64').subarray(0, 4).toString('hex') !== '89504e47') throw bad('La firma no es válida. Vuelve a firmar.');
+  const name = clean(b.name, 80);
+  if (!name) throw bad('Escribe el nombre de quien firma');
+  const at = new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Madrid' });   // AAAA-MM-DD HH:MM:SS
+  db.prepare('UPDATE deliveries SET signature=?,signed_at=?,signed_name=?,signed_id=?,signed_by_user=? WHERE id=?')
+    .run(sig, at, name, clean(b.dni, 20), req.user.name || req.user.email, d.id);
+  logStatus(d.order_id, 'Albarán ' + deliveryCode(d) + ' firmado por ' + name, req.user);
+  res.json({ ok: true, signed_at: at });
 });
 // datos para imprimir (ninguna cifra de dinero)
 app.get('/api/deliveries/:id', auth.requireAdmin, (req, res) => {
@@ -793,6 +810,7 @@ app.get('/api/deliveries/:id', auth.requireAdmin, (req, res) => {
   const all = deliveryList(o.id);
   res.json({
     code: deliveryCode(d), delivered_at: d.delivered_at, delivered_by: d.delivered_by, notes: d.notes,
+    signed: !!d.signature, signature: d.signature || '', signed_at: d.signed_at || '', signed_name: d.signed_name || '', signed_id: d.signed_id || '',
     number: all.findIndex(x => x.id === d.id) + 1, final: pending.length === 0,
     company: { name: getSetting('company_name'), cif: getSetting('company_cif'), address: getSetting('company_address'), postal: getSetting('company_postal'), city: getSetting('company_city'), phone: getSetting('company_phone'), email: getSetting('company_email') },
     client: { name: c.name, crest: c.crest || '', color: c.color, address: c.address, postal_code: c.postal_code, city: c.city, province: c.province },

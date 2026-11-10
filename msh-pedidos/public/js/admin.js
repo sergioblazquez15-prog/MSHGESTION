@@ -14,6 +14,7 @@ const ADMIN_VIEWS = {
   async prod() { return A.production(); },
   async stats() { return ST.view(); },
   async tasks() { return TK.view(); },
+  async albaran(rest) { return A.albaran(+rest[0]); },
   async comercial(rest) { return CM.view(rest); },
   async phases() { return A.template(); },
   async settings() { return A.settings(); }
@@ -69,6 +70,18 @@ A.tableHTML = function () {
    <td>${prioPill(o)}</td><td><span class="st ${stKey(o.status)}">${esc(o.status)}</span></td>${A.amountCells(o)}<td>${A.billPill(o, true)}</td></tr>`).join('')}</tbody>${A.sumRow(rows, 6)}</table></div>`;
 };
 
+/* ---------- albarán dentro de la app (con firma del cliente) ---------- */
+A.albaran = async function (id) {
+  const d = await api('GET', '/api/deliveries/' + id);
+  if (!A._albMsg) {
+    A._albMsg = true;
+    window.addEventListener('message', e => { const f = $('alb-frame'); if (f && e.data && e.data.albaranHeight) f.style.height = Math.max(500, e.data.albaranHeight + 8) + 'px'; });
+  }
+  return `<span class="crumb" onclick="go('orders/${d.order.id}')">← Pedido nº ${esc(d.order.number)}</span>
+   <div class="row" style="justify-content:space-between;margin:8px 0 14px"><h1 style="margin:0">${esc(d.code)}</h1>${d.signed ? '<span class="bill ok">Firmado</span>' : '<span class="bill pend">Pendiente de firma</span>'}</div>
+   <iframe id="alb-frame" title="Albarán de entrega" src="/albaran.html?id=${id}&embed=1" style="width:100%;height:900px;border:0;border-radius:16px;background:#fff;margin-bottom:90px"></iframe>`;
+};
+
 /* ---------- albaranes de entrega ---------- */
 A.deliveryPanel = o => `<div class="panel" id="dl-panel"><div class="ph"><h2>Albaranes de entrega</h2></div><div class="pb"><div class="mini">Cargando…</div></div></div>`;
 A.dlLoad = async function () {
@@ -89,7 +102,7 @@ A.dlHTML = function () {
     <td class="r">${i.ordered}</td><td class="r">${i.delivered}</td><td class="r"><b>${i.pending}</b></td>
     <td class="r">${i.pending ? `<input type="number" class="dlq" min="0" max="${i.pending}" value="${A.dl.draft[i.key] || 0}" style="width:64px" onchange="A.dlSet(${n},this)">` : '<span class="pill-on">✓</span>'}</td></tr>`; };
   const prev = d.deliveries.map(x => `<div class="sumrow"><span><b>${esc(x.code)}</b> · ${fmt(x.delivered_at)} · ${x.units} uds${x.delivered_by ? ' · ' + esc(x.delivered_by) : ''}</span>
-    <span class="btnrow"><a class="btn ghost sm" style="text-decoration:none" target="_blank" href="/albaran.html?id=${x.id}">Imprimir</a><button class="x" onclick="A.dlDel(${x.id},'${esc(x.code)}')">Eliminar</button></span></div>`).join('');
+    <span class="btnrow">${x.signed ? '<span class="bill ok">Firmado</span>' : '<span class="bill pend">Sin firmar</span>'}<button class="btn ${x.signed ? 'ghost' : 'amber'} sm" onclick="go('albaran/${x.id}')">${x.signed ? 'Abrir / PDF' : 'Abrir y firmar'}</button>${x.signed ? '' : `<button class="x" onclick="A.dlDel(${x.id},'${esc(x.code)}')">Eliminar</button>`}</span></div>`).join('');
   return `<div class="ph"><h2>Albaranes de entrega</h2><span class="mini">Sin importes · parciales</span></div><div class="pb">
    <p class="hint" style="margin-top:0">Pon cuántas unidades entregas ahora de cada artículo. El albarán sale sin precios y con lo que queda pendiente.</p>
    ${pend ? `<div class="tblwrap"><table style="min-width:520px"><thead><tr><th style="min-width:200px">Artículo</th><th class="r">Pedidas</th><th class="r">Ya entregadas</th><th class="r">Pendientes</th><th class="r">Entregar ahora</th></tr></thead><tbody>
@@ -106,7 +119,7 @@ A.dlCreate = async () => safe(async () => {
   const lines = Object.keys(A.dl.draft).map(key => ({ key, qty: A.dl.draft[key] })).filter(l => l.qty > 0);
   if (!lines.length) throw new Error('Pon al menos una unidad en «Entregar ahora»');
   const r = await api('POST', `/api/orders/${A.o.id}/deliveries`, { lines, delivered_at: $('dl-date').value, notes: $('dl-notes').value });
-  toast('Albarán creado'); window.open('/albaran.html?id=' + r.id, '_blank'); A.reload();
+  toast('Albarán creado: ya puede firmar el cliente'); go('albaran/' + r.id);
 });
 A.dlDel = async (id, code) => { if (!confirm('¿Eliminar el albarán ' + code + '? Sus unidades vuelven a quedar pendientes.')) return; await safe(async () => { await api('DELETE', '/api/deliveries/' + id); toast('Albarán eliminado'); A.reload(); }); };
 

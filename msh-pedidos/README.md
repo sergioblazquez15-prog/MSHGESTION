@@ -61,3 +61,6 @@ La base de datos se actualiza sola al arrancar y antes de migrar guarda una copi
 - **Pasar a cliente** (verde): pide nombre, NIF/CIF, dirección, CP, población y provincia (y el código de FactuSOL si existe), exige confirmar, crea el cliente y retira la ficha de Comercial; el historial queda en la ficha del cliente.
 - **Pedidos e Histórico**: columnas Total y Total con IVA a simple vista, y suma de los pedidos mostrados.
 - Clientes: persona de contacto, teléfono y correo.
+
+- **Comercial**: nuevo filtro por deporte (o sector en empresas), combinable con la zona.
+- **Firma digital del albarán**: al crear un albarán se abre dentro de la app. El cliente firma con el dedo en el móvil (nombre obligatorio, DNI opcional); la firma, la fecha y la hora quedan guardadas y salen en el albarán. Hasta que no se firma no se puede exportar a PDF, y un albarán firmado ya no se puede cambiar ni eliminar.
