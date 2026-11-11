@@ -74,11 +74,11 @@ function build(o, ctx) {
   const c = ctx.client;
   const fac = Array(FAC_N).fill(null);
   const put = (col, v) => { fac[idx(col)] = v; };
-  put('A', ctx.docType); put('B', pad6(ctx.number)); put('C', cut('Pedido ' + o.number, 50)); put('D', dmy(ctx.date)); put('E', 0);
+  put('A', ctx.docType); put('B', pad6(ctx.number)); put('C', cut('Pedido ' + o.number_label, 50)); put('D', dmy(ctx.date)); put('E', 0);
   put('H', Number(c.factusol_code) || null); put('I', cut(c.name, 50)); put('J', cut(c.address, 100)); put('K', cut(c.city, 30)); put('L', cut(c.postal_code, 10)); put('M', cut(c.province, 40)); put('N', cut(c.tax_id, 18));
   put('O', 0); put('P', 0); put('R', base); put('AS', base); put('AV', 21); put('AY', iva); put('BJ', total);
   if (ctx.payCode) put('BK', cut(ctx.payCode, 3));
-  put('BN', cut('Pedido nº ' + o.number + (o.title ? ' · ' + o.title : ''), 100)); put('BT', cut('Pedido ' + o.number, 50)); put('BU', cut(String(o.number), 20)); put('BV', dmy(o.order_date));
+  put('BN', cut('Pedido nº ' + o.number_label + (o.title ? ' · ' + o.title : ''), 100)); put('BT', cut('Pedido ' + o.number_label, 50)); put('BU', cut(String(o.number_label), 20)); put('BV', dmy(o.order_date));
   put('DD', 0); put('DE', dmy(ctx.date));
   return { facRows: [FAC_HEAD, fac], lfaRows: [LFA_HEAD, ...lines], base, iva, total, warnings, lineCount: lines.length };
 }

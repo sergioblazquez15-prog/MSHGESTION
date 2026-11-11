@@ -57,7 +57,7 @@ const shieldHTML = o => {
 };
 
 /* ===== pedidos: número, título y fotos ===== */
-const ordTitle = o => 'Pedido ' + o.number + (o.title ? ' - ' + o.title : '');
+const ordTitle = o => 'Pedido ' + (o.number_label || o.number) + (o.title ? ' - ' + o.title : '');
 const photoURL = f => '/photos/' + encodeURIComponent(f);
 const thumb = (f, big) => f ? `<a href="${photoURL(f)}" target="_blank" rel="noopener" onclick="event.stopPropagation()"><img class="thumb ${big ? 'big' : ''}" src="${photoURL(f)}" alt="Foto" loading="lazy"></a>` : '';
 async function shrinkImage(file, max) {

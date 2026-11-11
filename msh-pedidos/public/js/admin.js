@@ -64,7 +64,7 @@ A.tableHTML = function () {
   if (!rows.length) return `<div class="empty">${A.orders.length ? 'No hay pedidos con este filtro.' : 'Todavía no hay pedidos. Cuando un cliente envíe uno, aparecerá aquí.'}</div>`;
   return `<div style="overflow-x:auto"><table><thead><tr><th>Pedido</th><th>Cliente</th><th>Fecha</th><th>Fase</th><th>Entrega estimada</th><th>Estado</th><th class="r">Total</th><th class="r">Total con IVA</th><th>Facturación</th></tr></thead><tbody>
   ${rows.map(o => `<tr class="${diffDays(o.est_delivery, S.today) <= 7 ? 'urgent' : ''}" style="cursor:pointer" onclick="go('orders/${o.id}')">
-   <td><b>#${o.number}</b>${o.title ? ' · ' + esc(o.title) : ''}<br><span class="mini">${o.units} uds</span>${o.origin === 'admin' ? ' <span class="tag adm">MSH</span>' : ''}</td>
+   <td><b>${o.number_label}</b>${o.title ? ' · ' + esc(o.title) : ''}<br><span class="mini">${o.units} uds</span>${o.origin === 'admin' ? ' <span class="tag adm">MSH</span>' : ''}</td>
    <td><div class="cc">${shieldHTML(o)}${esc(o.client_name)}</div></td><td style="white-space:nowrap">${fmt(o.order_date)}</td>
    <td style="min-width:170px"><div class="mini" style="margin-bottom:5px">${esc(phName(o))}</div>${seg(o)}</td>
    <td>${prioPill(o)}</td><td><span class="st ${stKey(o.status)}">${esc(o.status)}</span></td>${A.amountCells(o)}<td>${A.billPill(o, true)}</td></tr>`).join('')}</tbody>${A.sumRow(rows, 6)}</table></div>`;
@@ -86,7 +86,7 @@ A.albaran = async function (id) {
 A.deliveryPanel = o => `<div class="panel" id="dl-panel"><div class="ph"><h2>Albaranes de entrega</h2></div><div class="pb"><div class="mini">Cargando…</div></div></div>`;
 A.dlLoad = async function () {
   const box = $('dl-panel'); if (!box) return;
-  try { A.dl = await api('GET', `/api/orders/${A.o.id}/deliveries`); A.dl.draft = {}; box.innerHTML = A.dlHTML(); }
+  try { A.dl = await api("GET", `/api/orders/${A.o.id}/deliveries`); A.dl.draft = {}; A.dlBy = undefined; box.innerHTML = A.dlHTML(); }
   catch (e) { box.querySelector('.pb').innerHTML = '<div class="mini">No se pudieron cargar los albaranes: ' + esc(e.message) + '</div>'; }
 };
 A.dlHTML = function () {
@@ -102,25 +102,33 @@ A.dlHTML = function () {
     <td class="r">${i.ordered}</td><td class="r">${i.delivered}</td><td class="r"><b>${i.pending}</b></td>
     <td class="r">${i.pending ? `<input type="number" class="dlq" min="0" max="${i.pending}" value="${A.dl.draft[i.key] || 0}" style="width:64px" onchange="A.dlSet(${n},this)">` : '<span class="pill-on">✓</span>'}</td></tr>`; };
   const prev = d.deliveries.map(x => `<div class="sumrow"><span><b>${esc(x.code)}</b> · ${fmt(x.delivered_at)} · ${x.units} uds${x.delivered_by ? ' · ' + esc(x.delivered_by) : ''}</span>
-    <span class="btnrow">${x.signed ? '<span class="bill ok">Firmado</span>' : '<span class="bill pend">Sin firmar</span>'}<button class="btn ${x.signed ? 'ghost' : 'amber'} sm" onclick="go('albaran/${x.id}')">${x.signed ? 'Abrir / PDF' : 'Abrir y firmar'}</button>${x.signed ? '' : `<button class="x" onclick="A.dlDel(${x.id},'${esc(x.code)}')">Eliminar</button>`}</span></div>`).join('');
+    <span class="btnrow">${x.signed ? '<span class="bill ok">Firmado</span>' : '<span class="bill pend">Sin firmar</span>'}<button class="btn ${x.signed ? 'ghost' : 'amber'} sm" onclick="go('albaran/${x.id}')">${x.signed ? 'Abrir / PDF' : 'Abrir y firmar'}</button>${x.signed ? '' : `<button class="btn ghost sm" onclick="A.dlEdit(${x.id})">Cambiar quién entrega / fecha</button><button class="x" onclick="A.dlDel(${x.id},'${esc(x.code)}')">Eliminar</button>`}</span></div>`).join('');
   return `<div class="ph"><h2>Albaranes de entrega</h2><span class="mini">Sin importes · parciales</span></div><div class="pb">
    <p class="hint" style="margin-top:0">Pon cuántas unidades entregas ahora de cada artículo. El albarán sale sin precios y con lo que queda pendiente.</p>
    ${pend ? `<div class="tblwrap"><table style="min-width:520px"><thead><tr><th style="min-width:200px">Artículo</th><th class="r">Pedidas</th><th class="r">Ya entregadas</th><th class="r">Pendientes</th><th class="r">Entregar ahora</th></tr></thead><tbody>
     ${grp.map(g => `<tr class="grp"><td colspan="5"><b>${esc(g.title)}</b></td></tr>${g.rows.map(row).join('')}`).join('')}</tbody></table></div>
    <div class="row" style="margin-top:12px;align-items:flex-end"><div class="field" style="margin:0"><label>Fecha de entrega</label><input type="date" id="dl-date" value="${S.today}"></div>
+    <div class="field" style="margin:0;min-width:170px"><label>Entregado por</label><input type="text" id="dl-by" value="${esc(A.dlBy !== undefined ? A.dlBy : (S.me && (S.me.name || S.me.email)) || '')}" placeholder="Quien entrega" maxlength="80"></div>
     <div class="field" style="margin:0;flex:1;min-width:180px"><label>Observaciones (opcional)</label><input type="text" id="dl-notes" style="width:100%"></div></div>
+   <p class="hint" style="margin:6px 0 0">Puedes preparar el albarán hoy para que lo entregue otra persona (Rafa, Lupe…) otro día: cambia la fecha y «Entregado por». Mientras no esté firmado puedes modificarlos.</p>
    <div class="btnrow" style="margin-top:12px"><button class="btn ghost" onclick="A.dlAll()">Entregar todo lo pendiente</button><button class="btn amber" onclick="A.dlCreate()">Crear albarán</button></div>`
    : '<div class="notice">Todo lo pedido ya está entregado en albaranes.</div>'}
    ${prev ? `<h4 style="margin:20px 0 6px">Albaranes ya creados</h4>${prev}` : ''}</div>`;
 };
 A.dlSet = (n, el) => { const i = A.dl.items[n]; let v = Math.max(0, Math.min(i.pending, parseInt(el.value, 10) || 0)); el.value = v; A.dl.draft[i.key] = v; };
-A.dlAll = () => { A.dl.items.forEach(i => { A.dl.draft[i.key] = i.pending; }); const keep = [$('dl-date').value, $('dl-notes').value]; $('dl-panel').innerHTML = A.dlHTML(); $('dl-date').value = keep[0]; $('dl-notes').value = keep[1]; };
+A.dlAll = () => { A.dl.items.forEach(i => { A.dl.draft[i.key] = i.pending; }); const keep = [$('dl-date').value, $('dl-notes').value, $('dl-by').value]; A.dlBy = keep[2]; $('dl-panel').innerHTML = A.dlHTML(); $('dl-date').value = keep[0]; $('dl-notes').value = keep[1]; };
 A.dlCreate = async () => safe(async () => {
   const lines = Object.keys(A.dl.draft).map(key => ({ key, qty: A.dl.draft[key] })).filter(l => l.qty > 0);
   if (!lines.length) throw new Error('Pon al menos una unidad en «Entregar ahora»');
-  const r = await api('POST', `/api/orders/${A.o.id}/deliveries`, { lines, delivered_at: $('dl-date').value, notes: $('dl-notes').value });
+  const r = await api('POST', `/api/orders/${A.o.id}/deliveries`, { lines, delivered_at: $('dl-date').value, delivered_by: $('dl-by').value, notes: $('dl-notes').value });
   toast('Albarán creado: ya puede firmar el cliente'); go('albaran/' + r.id);
 });
+A.dlEdit = id => {
+  const x = A.dl.deliveries.find(d => d.id === id); if (!x) return;
+  const by = prompt('¿Quién entrega este albarán?', x.delivered_by || ''); if (by === null) return;
+  const at = prompt('Fecha de entrega (AAAA-MM-DD)', x.delivered_at || S.today); if (at === null) return;
+  safe(async () => { await api('PUT', '/api/deliveries/' + id, { delivered_by: by, delivered_at: at }); toast('Albarán actualizado'); A.reload(); });
+};
 A.dlDel = async (id, code) => { if (!confirm('¿Eliminar el albarán ' + code + '? Sus unidades vuelven a quedar pendientes.')) return; await safe(async () => { await api('DELETE', '/api/deliveries/' + id); toast('Albarán eliminado'); A.reload(); }); };
 
 /* ---------- exportar a FactuSOL ---------- */
@@ -167,7 +175,7 @@ A.hist = async function () {
 A.histRows = function () {
   const q = A.histQ.trim().toLowerCase();
   return A.delivered.filter(o => (!A.histClient || String(o.client_id) === String(A.histClient)) &&
-    (!q || ('#' + o.number + ' ' + o.title + ' ' + o.client_name + ' ' + o.lines.map(l => l.product_name).join(' ')).toLowerCase().includes(q)))
+    (!q || (o.number_label + ' ' + o.number + ' ' + o.title + ' ' + o.client_name + ' ' + o.lines.map(l => l.product_name).join(' ')).toLowerCase().includes(q)))
     .sort((a, b) => (b.delivered_at || '').localeCompare(a.delivered_at || '') || b.id - a.id);
 };
 A.histHTML = function () {
@@ -180,7 +188,7 @@ A.histTable = function () {
   const rows = A.histRows();
   if (!rows.length) return '<div class="empty">No hay pedidos entregados con este filtro.</div>';
   return `<div style="overflow-x:auto"><table><thead><tr><th>Pedido</th><th>Cliente</th><th>Fecha</th><th>Entregado</th><th class="r">Total</th><th class="r">Total con IVA</th><th>Facturación</th><th>Documentos</th></tr></thead><tbody>
-  ${rows.map(o => `<tr style="cursor:pointer" onclick="go('orders/${o.id}')"><td><b>#${o.number}</b>${o.title ? ' · ' + esc(o.title) : ''} <span class="mini">${o.units} uds</span></td>
+  ${rows.map(o => `<tr style="cursor:pointer" onclick="go('orders/${o.id}')"><td><b>${o.number_label}</b>${o.title ? ' · ' + esc(o.title) : ''} <span class="mini">${o.units} uds</span></td>
    <td><div class="cc">${shieldHTML(o)}${esc(o.client_name)}</div></td><td>${fmt(o.order_date)}</td><td>${fmt(o.delivered_at)}</td>${A.amountCells(o)}<td>${A.billPill(o, true)}</td>
    <td>${['albaran', 'factura'].map(k => `<span class="pdf ${o.docs.some(d => d.kind === k) ? 'ok' : ''}">${k === 'albaran' ? 'Albarán' : 'Factura'}</span>`).join(' ')}</td></tr>`).join('')}</tbody>${A.sumRow(rows, 4)}</table></div>`;
 };
@@ -198,7 +206,7 @@ A.detailHTML = function (o) {
    <div><h1>${esc(ordTitle(o))}</h1><div class="sub" style="margin:6px 0 0">${esc(o.client_name)} · ${fmt(o.order_date)}${o.channel ? ' · ' + esc(o.channel) : ''}${o.origin === 'admin' ? ' · introducido por MSH' : ' · enviado por el cliente'}</div></div></div>
    <span class="row" style="gap:10px">${A.billPill(o)}<span class="st ${stKey(o.status)}" style="font-size:14px">${esc(o.status)}</span></span></div>
   <div class="panel"><div class="ph"><h2>Datos del pedido</h2></div><div class="pb"><div class="row" style="align-items:flex-end">
-   <div class="field" style="margin:0;width:120px"><label>Nº de pedido</label><input type="number" min="1" id="m-num" value="${o.number}" style="width:100%"></div>
+   <div class="field" style="margin:0;width:150px"><label>Nº de pedido (FactuSOL)</label><input type="text" id="m-num" value="${o.number_label}" style="width:100%" placeholder="1-000206"></div>
    <div class="field" style="margin:0;flex:1;min-width:220px"><label>Título o detalle</label><input type="text" id="m-title" value="${esc(o.title || '')}" placeholder="Ej. Tallaje Encinas" style="width:100%"></div>
    <button class="btn amber" onclick="A.saveMeta()">Guardar</button><button class="btn ghost" onclick="go('edit/${o.id}')">Editar artículos y fecha</button></div></div></div>
   <div class="panel"><div class="ph"><h2>Seguimiento</h2><span class="btnrow"><a class="btn ghost sm" style="text-decoration:none" target="_blank" href="/print.html?id=${o.id}">Exportar PDF</a>
@@ -279,7 +287,7 @@ A.newOrder = async function (clientId) {
     <div class="panel"><div class="pb"><div class="grid2" style="gap:16px"><div class="field"><label>Cliente</label>${sel('n-client', clientOpts(false), A.nc, 'onchange="go(\'new/\'+this.value)"')}</div>
      <div class="field"><label>Fecha del pedido</label><input type="date" id="n-date" value="${S.today}"></div>
      <div class="field"><label>Cómo llegó</label>${sel('n-chan', ['Correo', 'Teléfono', 'WhatsApp', 'En persona', 'Otro'].map(x => [x, x]), 'Correo')}</div>
-     <div class="field"><label>Nº de pedido</label><input type="number" min="1" id="n-num" placeholder="Automático: ${nn}"></div>
+     <div class="field"><label>Nº de pedido</label><input type="text" id="n-num" placeholder="Automático: ${nn}"></div>
      <div class="field"><label>Título o detalle (opcional)</label><input type="text" id="n-title" placeholder="Ej. Tallaje Encinas"></div>
      <div class="field"><label>El cliente podrá ver</label>${sel('n-view', [['estado', 'Solo el estado del pedido'], ['cronograma', 'El cronograma completo']], 'estado')}</div>
      <div class="field"><label>Notas (opcional)</label><input type="text" id="n-notes"></div></div>
@@ -307,7 +315,7 @@ A.editOrder = async function (id) {
   OF.init({ cat, admin: true, client: { allow_packs: 1, allow_products: 1, allow_free: 1 }, order: o });
   return {
     html: `<span class="crumb" onclick="go('orders/${o.id}')">← ${esc(ordTitle(o))}</span><h1>Editar pedido</h1><p class="sub">${esc(o.client_name)}. Los cambios no avisan al cliente.</p>
-    <div class="panel"><div class="pb"><div class="grid2" style="gap:16px"><div class="field"><label>Nº de pedido</label><input type="number" min="1" id="e-num" value="${o.number}"></div>
+    <div class="panel"><div class="pb"><div class="grid2" style="gap:16px"><div class="field"><label>Nº de pedido</label><input type="text" id="e-num" value="${o.number_label}" placeholder="1-000206"></div>
      <div class="field"><label>Título o detalle</label><input type="text" id="e-title" value="${esc(o.title || '')}" placeholder="Ej. Tallaje Encinas"></div>
      <div class="field"><label>Fecha del pedido</label><input type="date" id="e-date" value="${o.order_date}"></div>
      <div class="field"><label>Cómo llegó</label><input type="text" id="e-chan" value="${esc(o.channel || '')}"></div>
@@ -558,7 +566,7 @@ A.prodDraw = function () {
     h = d.orders.length ? d.orders.map(o => `<div class="panel"><div class="ph"><h2>${esc(ordTitle(o))} · ${esc(o.client_name)}</h2><span class="mini">${fmt(o.order_date)} · entrega ${fmt(o.est_delivery)}</span></div><div class="pb">${linesHTML(o)}</div></div>`).join('') : A.pEmpty();
   } else {
     const ids = A.pq.sel;
-    h = `<div class="panel"><div class="ph"><h2>Elige los pedidos</h2></div><div class="pb"><div class="chips">${A.pbase.orders.map(o => `<label class="chip ${ids.includes(o.id) ? 'on' : ''}" style="cursor:pointer"><input type="checkbox" hidden ${ids.includes(o.id) ? 'checked' : ''} onchange="A.pickOrder(${o.id},this.checked)">#${o.number}${o.title ? ' ' + esc(o.title) : ''} · ${esc(o.client_name)}</label>`).join('') || '<span class="mini">No hay pedidos.</span>'}</div></div></div>`;
+    h = `<div class="panel"><div class="ph"><h2>Elige los pedidos</h2></div><div class="pb"><div class="chips">${A.pbase.orders.map(o => `<label class="chip ${ids.includes(o.id) ? 'on' : ''}" style="cursor:pointer"><input type="checkbox" hidden ${ids.includes(o.id) ? 'checked' : ''} onchange="A.pickOrder(${o.id},this.checked)">${o.number_label}${o.title ? ' ' + esc(o.title) : ''} · ${esc(o.client_name)}</label>`).join('') || '<span class="mini">No hay pedidos.</span>'}</div></div></div>`;
     if (ids.length) {
       h += `<h3 style="font-family:var(--serif);font-weight:400;font-size:24px;margin:24px 0 12px">Resumen de ${ids.length} pedidos</h3>
       <div class="panel"><table><thead><tr><th>Artículo</th><th>Talla</th><th>Unidades</th></tr></thead><tbody>${d.articles.map(a => `<tr><td>${esc(a.article)}</td><td>${esc(a.size) || '—'}</td><td><b>${a.qty}</b></td></tr>`).join('')}</tbody></table></div>
@@ -596,7 +604,7 @@ A.settings = async function () {
     <p class="hint" style="margin-top:0">Salen en la cabecera de los albaranes de entrega.</p>
     ${f('c-name', 'Razón social', st.company_name)}${f('c-cif', 'CIF', st.company_cif)}${f('c-addr', 'Dirección', st.company_address)}${f('c-postal', 'Código postal', st.company_postal)}${f('c-city', 'Población', st.company_city)}${f('c-phone', 'Teléfono (opcional)', st.company_phone)}${f('c-email', 'Correo (opcional)', st.company_email)}
     <h4 style="margin:18px 0 10px">Facturación (FactuSOL)</h4>
-    ${f('i-doc', 'Tipo de documento / serie de la factura', st.invoice_doc_type)}${f('i-next', 'Siguiente número de factura', st.invoice_next)}${f('i-pay', 'Código de forma de pago en FactuSOL (opcional)', st.invoice_pay_code)}
+    ${f('i-doc', 'Serie de FactuSOL (pedidos y facturas llevan el mismo número, p. ej. serie 1 → 1-000206)', st.invoice_doc_type)}${f('i-pay', 'Código de forma de pago en FactuSOL (opcional)', st.invoice_pay_code)}
     <div class="btnrow"><button class="btn amber" onclick="A.saveSettings()">Guardar</button><a class="btn ghost" style="text-decoration:none" href="/api/factusol/articles">Descargar códigos de artículo</a></div></div></div>
    <div class="panel"><div class="ph"><h2>Correo saliente</h2></div><div class="pb">
     <p class="hint" style="margin-top:0">Con esto la app avisa a los clientes en cada cambio. Usa los datos SMTP de tu proveedor de correo.</p>
@@ -620,7 +628,7 @@ A.settings = async function () {
     <button class="btn amber" onclick="changePassword()">Cambiar contraseña</button></div></div></div></div>`;
 };
 A.saveSettings = async () => safe(async () => {
-  await api('PUT', '/api/settings', { smtp_host: $('s-host').value, smtp_port: $('s-port').value, smtp_user: $('s-user').value, smtp_pass: $('s-pass').value, smtp_from: $('s-from').value, notify_email: $('s-notify').value, public_url: $('s-url').value, brand_name: $('s-brand').value, company_name: $('c-name').value, company_cif: $('c-cif').value, company_address: $('c-addr').value, company_postal: $('c-postal').value, company_city: $('c-city').value, company_phone: $('c-phone').value, company_email: $('c-email').value, invoice_doc_type: $('i-doc').value, invoice_next: $('i-next').value, invoice_pay_code: $('i-pay').value });
+  await api('PUT', '/api/settings', { smtp_host: $('s-host').value, smtp_port: $('s-port').value, smtp_user: $('s-user').value, smtp_pass: $('s-pass').value, smtp_from: $('s-from').value, notify_email: $('s-notify').value, public_url: $('s-url').value, brand_name: $('s-brand').value, company_name: $('c-name').value, company_cif: $('c-cif').value, company_address: $('c-addr').value, company_postal: $('c-postal').value, company_city: $('c-city').value, company_phone: $('c-phone').value, company_email: $('c-email').value, invoice_doc_type: $('i-doc').value, invoice_pay_code: $('i-pay').value });
   toast('Ajustes guardados'); A.reload();
 });
 A.testMail = async () => {

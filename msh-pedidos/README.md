@@ -64,3 +64,12 @@ La base de datos se actualiza sola al arrancar y antes de migrar guarda una copi
 
 - **Comercial**: nuevo filtro por deporte (o sector en empresas), combinable con la zona.
 - **Firma digital del albarán**: al crear un albarán se abre dentro de la app. El cliente firma con el dedo en el móvil (nombre obligatorio, DNI opcional); la firma, la fecha y la hora quedan guardadas y salen en el albarán. Hasta que no se firma no se puede exportar a PDF, y un albarán firmado ya no se puede cambiar ni eliminar.
+
+## v7 · Numeración FactuSOL y «Entregado por»
+
+- **Nº de pedido en formato FactuSOL** (serie-número, p. ej. `1-000206`). También acepta solo el número (`206`, usa la serie de Ajustes). Se puede cambiar en cualquier pedido (pendientes e histórico) desde «Datos del pedido». No se admiten duplicados.
+- Un pedido nuevo continúa con el **número más alto existente + 1** (si el último es 1-000206, el siguiente es 1-000207).
+- Los albaranes sin firmar muestran siempre el número actual del pedido (se actualizan solos); los firmados conservan su documento.
+- La **factura de FactuSOL lleva el mismo número que el pedido**. Un pedido ya exportado no puede renumerarse hasta anular la exportación.
+- **Entregado por**: editable al crear el albarán (por defecto, el usuario) y modificable después, junto con la fecha, mientras esté sin firmar.
+- Migración automática a esquema 7 con copia de seguridad previa. Los pedidos existentes pasan a `1-00000N` con su número actual.

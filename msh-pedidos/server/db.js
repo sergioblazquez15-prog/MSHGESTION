@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS email_log(
 
 
 /* ---------- Migraciones (conservan todos los datos existentes) ---------- */
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const ver = db.prepare('PRAGMA user_version').get().user_version;
 if (ver < SCHEMA_VERSION) {
   if (existed && ver < SCHEMA_VERSION) {
@@ -320,6 +320,10 @@ if (ver < SCHEMA_VERSION) {
     ['contact_name', 'phone', 'email'].forEach(c => addCol('clients', c, "TEXT NOT NULL DEFAULT ''"));
     // v6: firma digital del albarán de entrega
     ['signature', 'signed_at', 'signed_name', 'signed_id', 'signed_by_user'].forEach(c => addCol('deliveries', c, "TEXT NOT NULL DEFAULT ''"));
+    // v7: numeración de pedidos estilo FactuSOL (serie-número, p. ej. 1-000206)
+    addCol('orders', 'series', 'INTEGER NOT NULL DEFAULT 1');
+    db.exec('DROP INDEX IF EXISTS idx_orders_number');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_series_number ON orders(series, number)');
   })();
   db.exec('PRAGMA user_version = ' + SCHEMA_VERSION);
 }
