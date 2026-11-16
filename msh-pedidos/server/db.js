@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS email_log(
 
 
 /* ---------- Migraciones (conservan todos los datos existentes) ---------- */
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const ver = db.prepare('PRAGMA user_version').get().user_version;
 if (ver < SCHEMA_VERSION) {
   if (existed && ver < SCHEMA_VERSION) {
@@ -324,6 +324,12 @@ if (ver < SCHEMA_VERSION) {
     addCol('orders', 'series', 'INTEGER NOT NULL DEFAULT 1');
     db.exec('DROP INDEX IF EXISTS idx_orders_number');
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_series_number ON orders(series, number)');
+    // v8: los albaranes firmados guardan los datos del cliente y del pedido del momento de la firma
+    addCol('deliveries', 'snapshot', "TEXT NOT NULL DEFAULT ''");
+    db.prepare("SELECT d.id, o.series, o.number, o.title, c.name, c.crest, c.color, c.address, c.postal_code, c.city, c.province FROM deliveries d JOIN orders o ON o.id=d.order_id JOIN clients c ON c.id=o.client_id WHERE d.signature<>'' AND d.snapshot=''").all().forEach(r => {
+      const snap = { number: (r.series || 1) + '-' + String(r.number).padStart(6, '0'), title: r.title || '', client: { name: r.name, crest: r.crest || '', color: r.color, address: r.address, postal_code: r.postal_code, city: r.city, province: r.province } };
+      db.prepare('UPDATE deliveries SET snapshot=? WHERE id=?').run(JSON.stringify(snap), r.id);
+    });
   })();
   db.exec('PRAGMA user_version = ' + SCHEMA_VERSION);
 }

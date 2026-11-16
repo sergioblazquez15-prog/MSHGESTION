@@ -140,7 +140,7 @@ A.fsLoad = async function () {
     const inv = r.invoice;
     box.innerHTML = `${r.issues.length ? `<div class="notice" style="margin-bottom:10px">${r.issues.map(esc).join('<br>')}</div>` : ''}
      <p class="hint" style="margin:0 0 10px">${inv ? 'Factura reservada: <b>' + esc(inv.code) + '</b>. Si vuelves a descargar, mantiene el mismo número.' : 'Al descargar se reserva el número <b>' + esc(r.next_code) + '</b>.'}</p>
-     <div class="btnrow"><button class="btn amber sm" ${r.blocking ? 'disabled style="opacity:.5"' : ''} onclick="A.fsExport()">Descargar para FactuSOL (FAC + LFA)</button>${inv ? '<button class="btn ghost sm" onclick="A.fsRelease()">Anular número</button>' : ''}</div>`;
+     <div class="btnrow"><button class="btn amber sm" ${r.blocking ? 'disabled style="opacity:.5"' : ''} onclick="A.fsExport()">Descargar para FactuSOL (FAC + LFA)</button>${inv ? '<button class="btn danger sm" onclick="A.fsRelease()">Anular exportación</button>' : ''}</div>`;
   } catch (e) { box.innerHTML = '<span class="mini">' + esc(e.message) + '</span>'; }
 };
 A.fsExport = async () => safe(async () => {
@@ -152,7 +152,7 @@ A.fsExport = async () => safe(async () => {
   toast(warn ? 'Descargado con avisos: ' + warn : 'Descargado: factura ' + code, !!warn);
   A.fsLoad();
 });
-A.fsRelease = async () => { if (!confirm('¿Anular el número reservado de este pedido? Solo se libera si fue el último.')) return; await safe(async () => { const r = await api('DELETE', `/api/orders/${A.o.id}/factusol`); toast(r.released ? 'Número liberado' : 'Anulado (el número no se reutiliza porque ya hay otro después)'); A.reload(); }); };
+A.fsRelease = async () => { if (!confirm('¿Anular la exportación a FactuSOL de este pedido? Se libera el número de factura. Si ya importaste esos Excel en FactuSOL, tendrás que borrar allí esa factura.')) return; await safe(async () => { const r = await api('DELETE', `/api/orders/${A.o.id}/factusol`); toast('Exportación anulada'); A.reload(); }); };
 
 A.sumRow = (rows, span) => {
   const t = rows.reduce((a, o) => a + (o.total || 0), 0), ti = rows.reduce((a, o) => a + (o.total_iva || 0), 0);
@@ -197,6 +197,7 @@ A.histTable = function () {
 A.detail = async function (id) {
   const o = await api('GET', '/api/orders/' + id);
   A.o = o;
+  await loadClients();
   return { html: A.detailHTML(o), after: () => { PE.init(o.phases, o, { enable: true, onChange: () => { $('ph-save').disabled = false; } }); $('ph-edit').innerHTML = PE.html(); PE.mount(); A.dlLoad(); A.fsLoad(); } };
 };
 A.detailHTML = function (o) {
@@ -207,8 +208,10 @@ A.detailHTML = function (o) {
    <span class="row" style="gap:10px">${A.billPill(o)}<span class="st ${stKey(o.status)}" style="font-size:14px">${esc(o.status)}</span></span></div>
   <div class="panel"><div class="ph"><h2>Datos del pedido</h2></div><div class="pb"><div class="row" style="align-items:flex-end">
    <div class="field" style="margin:0;width:150px"><label>Nº de pedido (FactuSOL)</label><input type="text" id="m-num" value="${o.number_label}" style="width:100%" placeholder="1-000206"></div>
+   <div class="field" style="margin:0;min-width:200px"><label>Cliente</label>${sel('m-client', A.clients.filter(c => c.active || c.id === o.client_id).map(c => [c.id, c.name]), o.client_id)}</div>
    <div class="field" style="margin:0;flex:1;min-width:220px"><label>Título o detalle</label><input type="text" id="m-title" value="${esc(o.title || '')}" placeholder="Ej. Tallaje Encinas" style="width:100%"></div>
-   <button class="btn amber" onclick="A.saveMeta()">Guardar</button><button class="btn ghost" onclick="go('edit/${o.id}')">Editar artículos y fecha</button></div></div></div>
+   <button class="btn amber" onclick="A.saveMeta()">Guardar</button><button class="btn ghost" onclick="go('edit/${o.id}')">Editar artículos y fecha</button></div>
+   ${o.invoice_number ? `<div class="notice" style="margin-top:12px">Este pedido está exportado a FactuSOL como factura <b>${esc(o.invoice_number)}</b>. Para cambiarle el cliente o el número, anula antes la exportación. <button class="btn danger sm" style="margin-left:8px" onclick="A.fsRelease()">Anular exportación</button></div>` : ''}</div></div>
   <div class="panel"><div class="ph"><h2>Seguimiento</h2><span class="btnrow"><a class="btn ghost sm" style="text-decoration:none" target="_blank" href="/print.html?id=${o.id}">Exportar PDF</a>
    <button class="btn ghost sm" onclick="A.adv(-1)" ${o.status === 'Recibido' && !o.cur ? 'disabled style="opacity:.4"' : ''}>← Fase anterior</button>
    <button class="btn amber sm" onclick="A.adv(1)" ${fin ? 'disabled style="opacity:.4"' : ''}>Avanzar fase →</button></span></div>
@@ -242,7 +245,8 @@ A.docsHTML = function (o) {
 A.reload = function () { route(); };
 A.setInvoiced = async (on) => safe(async () => { await api('POST', `/api/orders/${A.o.id}/invoiced`, { invoiced: on }); toast(on ? 'Marcado como facturado' : 'Marcado como pendiente de facturar'); A.reload(); });
 A.saveMeta = async () => safe(async () => {
-  await api('POST', `/api/orders/${A.o.id}/meta`, { number: $('m-num').value, title: $('m-title').value });
+  if (+$('m-client').value !== A.o.client_id && !confirm('¿Pasar este pedido a otro cliente? Pasará a verlo el nuevo cliente y el anterior dejará de verlo.')) return;
+  await api('POST', `/api/orders/${A.o.id}/meta`, { number: $('m-num').value, title: $('m-title').value, client_id: $('m-client').value });
   toast('Datos guardados'); A.reload();
 });
 A.setView = async (v) => safe(async () => { await api('POST', `/api/orders/${A.o.id}/view`, { client_view: v }); toast(v === 'estado' ? 'El cliente verá solo el estado' : 'El cliente verá el cronograma completo'); A.reload(); });

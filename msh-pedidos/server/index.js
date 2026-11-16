@@ -614,8 +614,19 @@ app.post('/api/orders/:id/meta', auth.requireAdmin, (req, res) => {
   if (!o) throw bad('Pedido no encontrado', 404);
   const pn = pickNumber(req.body.number, o.id) || { series: o.series, number: o.number };
   guardRenumber(o, pn);
+  let newClient = null;
+  if (req.body.client_id != null && Number(req.body.client_id) !== o.client_id) {
+    newClient = db.prepare('SELECT * FROM clients WHERE id=?').get(Number(req.body.client_id));
+    if (!newClient) throw bad('Cliente no encontrado', 404);
+    if (db.prepare('SELECT 1 FROM invoices WHERE order_id=?').get(o.id)) throw bad('Este pedido ya está exportado a FactuSOL. Anula la exportación antes de cambiarle el cliente.');
+  }
   const title = clean(req.body.title, 120);
   db.prepare("UPDATE orders SET series=?,number=?,title=?,updated_at=datetime('now') WHERE id=?").run(pn.series, pn.number, title, o.id);
+  if (newClient) {
+    const oldName = (db.prepare('SELECT name FROM clients WHERE id=?').get(o.client_id) || {}).name;
+    db.prepare("UPDATE orders SET client_id=? WHERE id=?").run(newClient.id, o.id);
+    logStatus(o.id, 'Cliente cambiado: de ' + oldName + ' a ' + newClient.name, req.user);
+  }
   logStatus(o.id, 'Datos del pedido: nº ' + numLabel(pn.series, pn.number) + (title ? ' · ' + title : ''), req.user);
   res.json(loadOrder(o.id));
 });
@@ -816,6 +827,12 @@ app.delete('/api/deliveries/:id', auth.requireAdmin, (req, res) => {
   logStatus(d.order_id, 'Albarán de entrega ' + deliveryCode(d) + ' eliminado', req.user);
   res.json({ ok: true });
 });
+// datos del cliente y del pedido tal como estaban al firmar: un albarán firmado no cambia aunque luego se cambie de cliente o de número
+function deliverySnapshot(d) {
+  const o = db.prepare('SELECT * FROM orders WHERE id=?').get(d.order_id);
+  const c = db.prepare('SELECT * FROM clients WHERE id=?').get(o.client_id);
+  return JSON.stringify({ number: numLabel(o.series || 1, o.number), title: o.title || '', client: { name: c.name, crest: c.crest || '', color: c.color, address: c.address, postal_code: c.postal_code, city: c.city, province: c.province } });
+}
 // firma digital del cliente (dibujada con el dedo en el móvil). Una vez firmado no se puede cambiar.
 app.post('/api/deliveries/:id/sign', auth.requireAdmin, (req, res) => {
   const d = db.prepare('SELECT * FROM deliveries WHERE id=?').get(req.params.id);
@@ -827,8 +844,8 @@ app.post('/api/deliveries/:id/sign', auth.requireAdmin, (req, res) => {
   const name = clean(b.name, 80);
   if (!name) throw bad('Escribe el nombre de quien firma');
   const at = new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Madrid' });   // AAAA-MM-DD HH:MM:SS
-  db.prepare('UPDATE deliveries SET signature=?,signed_at=?,signed_name=?,signed_id=?,signed_by_user=? WHERE id=?')
-    .run(sig, at, name, clean(b.dni, 20), req.user.name || req.user.email, d.id);
+  db.prepare('UPDATE deliveries SET signature=?,signed_at=?,signed_name=?,signed_id=?,signed_by_user=?,snapshot=? WHERE id=?')
+    .run(sig, at, name, clean(b.dni, 20), req.user.name || req.user.email, deliverySnapshot(d), d.id);
   logStatus(d.order_id, 'Albarán ' + deliveryCode(d) + ' firmado por ' + name, req.user);
   res.json({ ok: true, signed_at: at });
 });
@@ -844,13 +861,14 @@ app.get('/api/deliveries/:id', auth.requireAdmin, (req, res) => {
   const lines = plan.filter(i => mine.has(i.key)).map(i => ({ pack_name: i.pack_name, group_no: i.group_no, kind: i.kind, product_name: i.product_name, size: i.size, color: i.color, detail: i.detail, ordered: i.ordered, before: before.get(i.key) || 0, now: mine.get(i.key), pending: i.pending }));
   const pending = plan.filter(i => i.pending > 0).map(i => ({ pack_name: i.pack_name, product_name: i.product_name, size: i.size, color: i.color, detail: i.detail, qty: i.pending }));
   const all = deliveryList(o.id);
+  let snap = null; try { snap = d.signature && d.snapshot ? JSON.parse(d.snapshot) : null; } catch (e) { snap = null; }
   res.json({
     code: deliveryCode(d), delivered_at: d.delivered_at, delivered_by: d.delivered_by, notes: d.notes,
     signed: !!d.signature, signature: d.signature || '', signed_at: d.signed_at || '', signed_name: d.signed_name || '', signed_id: d.signed_id || '',
     number: all.findIndex(x => x.id === d.id) + 1, final: pending.length === 0,
     company: { name: getSetting('company_name'), cif: getSetting('company_cif'), address: getSetting('company_address'), postal: getSetting('company_postal'), city: getSetting('company_city'), phone: getSetting('company_phone'), email: getSetting('company_email') },
-    client: { name: c.name, crest: c.crest || '', color: c.color, address: c.address, postal_code: c.postal_code, city: c.city, province: c.province },
-    order: { id: o.id, number: o.number_label, title: o.title || '', order_date: o.order_date },
+    client: snap ? snap.client : { name: c.name, crest: c.crest || '', color: c.color, address: c.address, postal_code: c.postal_code, city: c.city, province: c.province },
+    order: { id: o.id, number: snap ? snap.number : o.number_label, title: snap ? snap.title : o.title || '', order_date: o.order_date },
     lines, pending,
     totals: { ordered: plan.reduce((a, i) => a + i.ordered, 0), now: lines.reduce((a, l) => a + l.now, 0), before: [...before.values()].reduce((a, v) => a + v, 0), pending: pending.reduce((a, p) => a + p.qty, 0) }
   });

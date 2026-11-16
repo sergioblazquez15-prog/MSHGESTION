@@ -73,3 +73,10 @@ La base de datos se actualiza sola al arrancar y antes de migrar guarda una copi
 - La **factura de FactuSOL lleva el mismo número que el pedido**. Un pedido ya exportado no puede renumerarse hasta anular la exportación.
 - **Entregado por**: editable al crear el albarán (por defecto, el usuario) y modificable después, junto con la fecha, mientras esté sin firmar.
 - Migración automática a esquema 7 con copia de seguridad previa. Los pedidos existentes pasan a `1-00000N` con su número actual.
+
+## v7.1 · Cambiar el cliente de un pedido
+
+- En «Datos del pedido» hay un desplegable **Cliente**: al guardar, el pedido pasa al otro cliente (lo deja de ver el anterior). Queda anotado en el historial del pedido.
+- Los albaranes **ya firmados no cambian**: conservan el cliente y el número de pedido del momento de la firma (v8 lo guarda y rellena los ya firmados). Los sin firmar pasan al nuevo cliente.
+- Si el pedido está exportado a FactuSOL hay que pulsar antes **Anular exportación** (botón visible en «Datos del pedido» y en «Pasar a FactuSOL»).
+- No avisa por correo a ningún cliente.
